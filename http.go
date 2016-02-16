@@ -406,11 +406,11 @@ func (req *Request) ResetBody() {
 	req.body = req.body[:0]
 }
 
-// CopyTo copies req contents to dst.
+// CopyTo copies req contents to dst except of body stream.
 func (req *Request) CopyTo(dst *Request) {
 	dst.Reset()
 	req.Header.CopyTo(&dst.Header)
-	dst.body = append(dst.body[:0], req.Body()...)
+	dst.body = append(dst.body[:0], req.body...)
 
 	req.uri.CopyTo(&dst.uri)
 	dst.parsedURI = req.parsedURI
@@ -867,6 +867,8 @@ func (req *Request) onlyMultipartForm() bool {
 // Write writes request to w.
 //
 // Write doesn't flush request to w for performance reasons.
+//
+// See also WriteTo.
 func (req *Request) Write(w *bufio.Writer) error {
 	if len(req.Header.Host()) == 0 {
 		uri := req.URI()
@@ -909,7 +911,8 @@ func (req *Request) Write(w *bufio.Writer) error {
 
 // WriteGzip writes response with gzipped body to w.
 //
-// The method sets 'Content-Encoding: gzip' header.
+// The method gzips response body and sets 'Content-Encoding: gzip'
+// header before writing response to w.
 //
 // WriteGzip doesn't flush response to w for performance reasons.
 func (resp *Response) WriteGzip(w *bufio.Writer) error {
@@ -925,7 +928,8 @@ func (resp *Response) WriteGzip(w *bufio.Writer) error {
 //     * CompressBestCompression
 //     * CompressDefaultCompression
 //
-// The method sets 'Content-Encoding: gzip' header.
+// The method gzips response body and sets 'Content-Encoding: gzip'
+// header before writing response to w.
 //
 // WriteGzipLevel doesn't flush response to w for performance reasons.
 func (resp *Response) WriteGzipLevel(w *bufio.Writer, level int) error {
@@ -937,7 +941,8 @@ func (resp *Response) WriteGzipLevel(w *bufio.Writer, level int) error {
 
 // WriteDeflate writes response with deflated body to w.
 //
-// The method sets 'Content-Encoding: deflate' header.
+// The method deflates response body and sets 'Content-Encoding: deflate'
+// header before writing response to w.
 //
 // WriteDeflate doesn't flush response to w for performance reasons.
 func (resp *Response) WriteDeflate(w *bufio.Writer) error {
@@ -953,7 +958,8 @@ func (resp *Response) WriteDeflate(w *bufio.Writer) error {
 //     * CompressBestCompression
 //     * CompressDefaultCompression
 //
-// The method sets 'Content-Encoding: deflate' header.
+// The method deflates response body and sets 'Content-Encoding: deflate'
+// header before writing response to w.
 //
 // WriteDeflateLevel doesn't flush response to w for performance reasons.
 func (resp *Response) WriteDeflateLevel(w *bufio.Writer, level int) error {
@@ -1024,6 +1030,8 @@ func (resp *Response) deflateBody(level int) error {
 // Write writes response to w.
 //
 // Write doesn't flush response to w for performance reasons.
+//
+// See also WriteTo.
 func (resp *Response) Write(w *bufio.Writer) error {
 	sendBody := !resp.mustSkipBody()
 
@@ -1063,22 +1071,20 @@ func (req *Request) writeBodyStream(w *bufio.Writer) error {
 		}
 	}
 	if contentLength >= 0 {
-		if err = req.Header.Write(w); err != nil {
-			return err
-		}
-		if err = writeBodyFixedSize(w, req.bodyStream, int64(contentLength)); err != nil {
-			return err
+		if err = req.Header.Write(w); err == nil {
+			err = writeBodyFixedSize(w, req.bodyStream, int64(contentLength))
 		}
 	} else {
 		req.Header.SetContentLength(-1)
-		if err = req.Header.Write(w); err != nil {
-			return err
-		}
-		if err = writeBodyChunked(w, req.bodyStream); err != nil {
-			return err
+		if err = req.Header.Write(w); err == nil {
+			err = writeBodyChunked(w, req.bodyStream)
 		}
 	}
-	return req.closeBodyStream()
+	err1 := req.closeBodyStream()
+	if err == nil {
+		err = err1
+	}
+	return err
 }
 
 func (resp *Response) writeBodyStream(w *bufio.Writer, sendBody bool) error {
@@ -1098,26 +1104,20 @@ func (resp *Response) writeBodyStream(w *bufio.Writer, sendBody bool) error {
 		}
 	}
 	if contentLength >= 0 {
-		if err = resp.Header.Write(w); err != nil {
-			return err
-		}
-		if sendBody {
-			if err = writeBodyFixedSize(w, resp.bodyStream, int64(contentLength)); err != nil {
-				return err
-			}
+		if err = resp.Header.Write(w); err == nil && sendBody {
+			err = writeBodyFixedSize(w, resp.bodyStream, int64(contentLength))
 		}
 	} else {
 		resp.Header.SetContentLength(-1)
-		if err = resp.Header.Write(w); err != nil {
-			return err
-		}
-		if sendBody {
-			if err = writeBodyChunked(w, resp.bodyStream); err != nil {
-				return err
-			}
+		if err = resp.Header.Write(w); err == nil && sendBody {
+			err = writeBodyChunked(w, resp.bodyStream)
 		}
 	}
-	return resp.closeBodyStream()
+	err1 := resp.closeBodyStream()
+	if err == nil {
+		err = err1
+	}
+	return err
 }
 
 func (req *Request) closeBodyStream() error {

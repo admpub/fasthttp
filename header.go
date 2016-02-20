@@ -15,8 +15,8 @@ import (
 // It is forbidden copying ResponseHeader instances.
 // Create new instances instead and use CopyTo.
 //
-// It is unsafe modifying/reading ResponseHeader instance from concurrently
-// running goroutines.
+// ResponseHeader instance MUST NOT be used from concurrently running
+// goroutines.
 type ResponseHeader struct {
 	statusCode int
 
@@ -40,8 +40,8 @@ type ResponseHeader struct {
 // It is forbidden copying RequestHeader instances.
 // Create new instances instead and use CopyTo.
 //
-// It is unsafe modifying/reading RequestHeader instance from concurrently
-// running goroutines.
+// RequestHeader instance MUST NOT be used from concurrently running
+// goroutines.
 type RequestHeader struct {
 	noHTTP11        bool
 	connectionClose bool
@@ -1011,16 +1011,28 @@ func (h *ResponseHeader) tryRead(r *bufio.Reader, n int) error {
 		if n == 1 || err == io.EOF {
 			return io.EOF
 		}
+		if err == bufio.ErrBufferFull {
+			err = bufferFullError(r)
+		}
 		return fmt.Errorf("error when reading response headers: %s", err)
 	}
 	isEOF := (err != nil)
 	b = mustPeekBuffered(r)
 	var headersLen int
 	if headersLen, err = h.parse(b); err != nil {
-		if err == errNeedMore && !isEOF {
-			return err
+		if err == errNeedMore {
+			if !isEOF {
+				return err
+			}
+
+			// Buggy servers may leave trailing CRLFs after response body.
+			// Treat this case as EOF.
+			if isOnlyCRLF(b) {
+				return io.EOF
+			}
 		}
-		return fmt.Errorf("erorr when reading response headers: %s", err)
+		bStart, bEnd := bufferStartEnd(b)
+		return fmt.Errorf("error when reading response headers: %s. buf=%q...%q", err, bStart, bEnd)
 	}
 	mustDiscard(r, headersLen)
 	return nil
@@ -1052,19 +1064,61 @@ func (h *RequestHeader) tryRead(r *bufio.Reader, n int) error {
 		if n == 1 || err == io.EOF {
 			return io.EOF
 		}
+		if err == bufio.ErrBufferFull {
+			err = bufferFullError(r)
+		}
 		return fmt.Errorf("error when reading request headers: %s", err)
 	}
 	isEOF := (err != nil)
 	b = mustPeekBuffered(r)
 	var headersLen int
 	if headersLen, err = h.parse(b); err != nil {
-		if err == errNeedMore && !isEOF {
-			return err
+		if err == errNeedMore {
+			if !isEOF {
+				return err
+			}
+
+			// Buggy clients may leave trailing CRLFs after the request body.
+			// Treat this case as EOF.
+			if isOnlyCRLF(b) {
+				return io.EOF
+			}
 		}
-		return fmt.Errorf("error when reading request headers: %s", err)
+		bStart, bEnd := bufferStartEnd(b)
+		return fmt.Errorf("error when reading request headers: %s. buf=%q...%q", err, bStart, bEnd)
 	}
 	mustDiscard(r, headersLen)
 	return nil
+}
+
+func bufferFullError(r *bufio.Reader) error {
+	n := r.Buffered()
+	b, err := r.Peek(n)
+	if err != nil {
+		panic(fmt.Sprintf("BUG: unexpected error returned from bufio.Reader.Peek(Buffered()): %s", err))
+	}
+	bStart, bEnd := bufferStartEnd(b)
+	return fmt.Errorf("headers exceed %d bytes. Increase ReadBufferSize. buf=%q...%q", n, bStart, bEnd)
+}
+
+func bufferStartEnd(b []byte) ([]byte, []byte) {
+	n := len(b)
+	start := 200
+	end := n - start
+	if start >= end {
+		start = n
+		end = n
+	}
+	return b[:start], b[end:]
+}
+
+func isOnlyCRLF(b []byte) bool {
+	for _, ch := range b {
+		if ch != '\r' && ch != '\n' {
+			return false
+		}
+	}
+	return true
 }
 
 func init() {

@@ -131,6 +131,9 @@ type Server struct {
 	// Per-connection buffer size for requests' reading.
 	// This also limits the maximum header size.
 	//
+	// Increase this buffer if your clients send multi-KB RequestURIs
+	// and/or multi-KB headers (for example, BIG cookies).
+	//
 	// Default buffer size is used if 0.
 	ReadBufferSize int
 
@@ -197,6 +200,16 @@ type Server struct {
 	//
 	// Server accepts all the requests by default.
 	GetOnly bool
+
+	// Logs all errors, including the most frequent
+	// 'connection reset by peer', 'broken pipe' and 'connection timeout'
+	// errors. Such errors are common in production serving real-world
+	// clients.
+	//
+	// By default the most frequent errors such as
+	// 'connection reset by peer', 'broken pipe' and 'connection timeout'
+	// are suppressed in order to limit output log traffic.
+	LogAllErrors bool
 
 	// Logger, which is used by RequestCtx.Logger().
 	//
@@ -282,8 +295,8 @@ func CompressHandlerLevel(h RequestHandler, level int) RequestHandler {
 // before return.
 //
 // It is unsafe modifying/reading RequestCtx instance from concurrently
-// running goroutines. The only exception is TimeoutError, which may be called
-// when other goroutines access RequestCtx.
+// running goroutines. The only exception is TimeoutError*, which may be called
+// while other goroutines accessing RequestCtx.
 type RequestCtx struct {
 	// Incoming request.
 	//
@@ -765,10 +778,11 @@ func (ctx *RequestCtx) SuccessString(contentType, body string) {
 // The redirect uri may be either absolute or relative to the current
 // request uri.
 func (ctx *RequestCtx) Redirect(uri string, statusCode int) {
-	var u URI
-	ctx.URI().CopyTo(&u)
+	u := AcquireURI()
+	ctx.URI().CopyTo(u)
 	u.Update(uri)
 	ctx.redirect(u.FullURI(), statusCode)
+	ReleaseURI(u)
 }
 
 // RedirectBytes sets 'Location: uri' response header and sets
@@ -786,10 +800,8 @@ func (ctx *RequestCtx) Redirect(uri string, statusCode int) {
 // The redirect uri may be either absolute or relative to the current
 // request uri.
 func (ctx *RequestCtx) RedirectBytes(uri []byte, statusCode int) {
-	var u URI
-	ctx.URI().CopyTo(&u)
-	u.UpdateBytes(uri)
-	ctx.redirect(u.FullURI(), statusCode)
+	s := unsafeBytesToStr(uri)
+	ctx.Redirect(s, statusCode)
 }
 
 func (ctx *RequestCtx) redirect(uri []byte, statusCode int) {
@@ -807,6 +819,8 @@ func getRedirectStatusCode(statusCode int) int {
 }
 
 // SetBody sets response body to the given value.
+//
+// It is safe re-using body argument after the function returns.
 func (ctx *RequestCtx) SetBody(body []byte) {
 	ctx.Response.SetBody(body)
 }
@@ -823,26 +837,13 @@ func (ctx *RequestCtx) ResetBody() {
 
 // SendFile sends local file contents from the given path as response body.
 //
-// Note that SendFile doesn't set Content-Type for the response body,
-// so set it yourself with SetContentType() before returning
-// from RequestHandler.
+// This is a shortcut to ServeFile(ctx, path).
+//
+// SendFile logs all the errors via ctx.Logger.
 //
 // See also ServeFile, FSHandler and FS.
-func (ctx *RequestCtx) SendFile(path string) error {
-	ifModStr := ctx.Request.Header.peek(strIfModifiedSince)
-	if len(ifModStr) > 0 {
-		if ifMod, err := ParseHTTPDate(ifModStr); err == nil {
-			lastMod, err := fsLastModified(path)
-			if err != nil {
-				return err
-			}
-			if !ifMod.Before(lastMod) {
-				ctx.NotModified()
-				return nil
-			}
-		}
-	}
-	return ctx.Response.SendFile(path)
+func (ctx *RequestCtx) SendFile(path string) {
+	ServeFile(ctx, path)
 }
 
 // IfModifiedSince returns true if lastModified exceeds 'If-Modified-Since'
@@ -1070,6 +1071,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	wp := &workerPool{
 		WorkerFunc:      s.serveConn,
 		MaxWorkersCount: maxWorkersCount,
+		LogAllErrors:    s.LogAllErrors,
 		Logger:          s.logger(),
 	}
 	wp.Start()

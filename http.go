@@ -433,9 +433,13 @@ func (req *Request) ResetBody() {
 
 // CopyTo copies req contents to dst except of body stream.
 func (req *Request) CopyTo(dst *Request) {
+	req.copyToSkipBody(dst)
+	dst.body = append(dst.body[:0], req.body...)
+}
+
+func (req *Request) copyToSkipBody(dst *Request) {
 	dst.Reset()
 	req.Header.CopyTo(&dst.Header)
-	dst.body = append(dst.body[:0], req.body...)
 
 	req.uri.CopyTo(&dst.uri)
 	dst.parsedURI = req.parsedURI
@@ -449,10 +453,24 @@ func (req *Request) CopyTo(dst *Request) {
 
 // CopyTo copies resp contents to dst except of body stream.
 func (resp *Response) CopyTo(dst *Response) {
+	resp.copyToSkipBody(dst)
+	dst.body = append(dst.body[:0], resp.body...)
+}
+
+func (resp *Response) copyToSkipBody(dst *Response) {
 	dst.Reset()
 	resp.Header.CopyTo(&dst.Header)
-	dst.body = append(dst.body[:0], resp.body...)
 	dst.SkipBody = resp.SkipBody
+}
+
+func swapRequestBody(a, b *Request) {
+	a.body, b.body = b.body, a.body
+	a.bodyStream, b.bodyStream = b.bodyStream, a.bodyStream
+}
+
+func swapResponseBody(a, b *Response) {
+	a.body, b.body = b.body, a.body
+	a.bodyStream, b.bodyStream = b.bodyStream, a.bodyStream
 }
 
 // URI returns request URI
@@ -522,7 +540,7 @@ func (req *Request) MultipartForm() (*multipart.Form, error) {
 		return nil, fmt.Errorf("unsupported Content-Encoding: %q", ce)
 	}
 
-	f, err := readMultipartForm(bytes.NewReader(body), req.multipartFormBoundary, 0, len(body))
+	f, err := readMultipartForm(bytes.NewReader(body), req.multipartFormBoundary, len(body), len(body))
 	if err != nil {
 		return nil, err
 	}
@@ -588,15 +606,16 @@ func WriteMultipartForm(w io.Writer, f *multipart.Form, boundary string) error {
 	return nil
 }
 
-func readMultipartForm(r io.Reader, boundary string, maxBodySize, maxInMemoryFileSize int) (*multipart.Form, error) {
+func readMultipartForm(r io.Reader, boundary string, size, maxInMemoryFileSize int) (*multipart.Form, error) {
 	// Do not care about memory allocations here, since they are tiny
 	// compared to multipart data (aka multi-MB files) usually sent
 	// in multipart/form-data requests.
 
-	if maxBodySize > 0 {
-		r = io.LimitReader(r, int64(maxBodySize))
+	if size <= 0 {
+		panic(fmt.Sprintf("BUG: form size must be greater than 0. Given %d", size))
 	}
-	mr := multipart.NewReader(r, boundary)
+	lr := io.LimitReader(r, int64(size))
+	mr := multipart.NewReader(lr, boundary)
 	f, err := mr.ReadForm(int64(maxInMemoryFileSize))
 	if err != nil {
 		return nil, fmt.Errorf("cannot read multipart/form-data body: %s", err)
@@ -645,19 +664,17 @@ func (resp *Response) resetSkipHeader() {
 }
 
 func reuseBody(body []byte) []byte {
-	if cap(body) > maxReuseBodyCap {
-		return nil
-	}
+	// Production monitoring shows that it is very difficult to create
+	// an optimal strategy for body buffer re-use for real-world loads.
+	//
+	// For instance, the strategy 'throw away big buffers, while re-use
+	// small buffers' fails when small and large responses are equally
+	// distributed.
+	//
+	// So just re-use all body buffers irregardless of their sizes
+	// in the hope sync.Pool+GC finds out an optimal strategy :)
 	return body[:0]
 }
-
-// maxReuseBodyLen is the maximum request and response body buffer capacity,
-// which may be reused.
-//
-// Body is thrown to GC if its' capacity exceeds this limit.
-//
-// This limits memory waste and memory fragmentation when re-using body buffers.
-const maxReuseBodyCap = 8 * 1024
 
 // Read reads request (including body) from the given r.
 //
@@ -753,12 +770,16 @@ func (req *Request) ContinueReadBody(r *bufio.Reader, maxBodySize int) error {
 	var err error
 	contentLength := req.Header.ContentLength()
 	if contentLength > 0 {
+		if maxBodySize > 0 && contentLength > maxBodySize {
+			return ErrBodyTooLarge
+		}
+
 		// Pre-read multipart form data of known length.
 		// This way we limit memory usage for large file uploads, since their contents
 		// is streamed into temporary files if file size exceeds defaultMaxInMemoryFileSize.
 		req.multipartFormBoundary = string(req.Header.MultipartFormBoundary())
 		if len(req.multipartFormBoundary) > 0 && len(req.Header.peek(strContentEncoding)) == 0 {
-			req.multipartForm, err = readMultipartForm(r, req.multipartFormBoundary, maxBodySize, defaultMaxInMemoryFileSize)
+			req.multipartForm, err = readMultipartForm(r, req.multipartFormBoundary, contentLength, defaultMaxInMemoryFileSize)
 			if err != nil {
 				req.Reset()
 			}

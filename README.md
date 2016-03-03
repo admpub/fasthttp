@@ -1,10 +1,19 @@
+[![Build Status](https://travis-ci.org/valyala/fasthttp.svg)](https://travis-ci.org/valyala/fasthttp)
+[![GoDoc](https://godoc.org/github.com/valyala/fasthttp?status.svg)](http://godoc.org/github.com/valyala/fasthttp)
+[![Coverage](http://gocover.io/_badge/github.com/valyala/fasthttp)](http://gocover.io/github.com/valyala/fasthttp)
+[![Go Report](http://goreportcard.com/badge/valyala/fasthttp)](http://goreportcard.com/report/valyala/fasthttp)
+
 # fasthttp
 Fast HTTP implementation for Go.
 
 Currently fasthttp is successfully used in a production serving 100K rps from 1M
 concurrent keep-alive connections on a single server.
 
-[![Build Status](https://travis-ci.org/valyala/fasthttp.svg)](https://travis-ci.org/valyala/fasthttp)
+[TechEmpower Benchmark round 12 results](https://www.techempower.com/benchmarks/#section=data-r12&hw=peak&test=plaintext)
+
+[Server Benchmarks](#http-server-performance-comparison-with-nethttp)
+
+[Client Benchmarks](#http-client-comparison-with-nethttp)
 
 [Documentation](https://godoc.org/github.com/valyala/fasthttp)
 
@@ -22,9 +31,10 @@ concurrent keep-alive connections on a single server.
 
 # HTTP server performance comparison with [net/http](https://golang.org/pkg/net/http/)
 
-In short, fasthttp server is up to 10 times faster than net/http. Below are benchmark results.
+In short, fasthttp server is up to 10 times faster than net/http.
+Below are benchmark results.
 
-GOMAXPROCS=1
+*GOMAXPROCS=1*
 
 net/http server:
 ```
@@ -54,7 +64,7 @@ BenchmarkServerGet10ReqPerConn10KClients 	 5000000	      1297 ns/op	       1 B/o
 BenchmarkServerGet100ReqPerConn10KClients	10000000	      1264 ns/op	       9 B/op	       0 allocs/op
 ```
 
-GOMAXPROCS=4
+*GOMAXPROCS=4*
 
 net/http server:
 ```
@@ -86,9 +96,10 @@ BenchmarkServerGet100ReqPerConn10KClients-4	20000000	       384 ns/op	       4 B
 
 # HTTP client comparison with net/http
 
-In short, fasthttp client is up to 10 times faster than net/http. Below are benchmark results.
+In short, fasthttp client is up to 10 times faster than net/http.
+Below are benchmark results.
 
-GOMAXPROCS=1
+*GOMAXPROCS=1*
 
 net/http client:
 ```
@@ -118,7 +129,7 @@ BenchmarkClientGetEndToEnd100Inmemory 	 2000000	      3885 ns/op	       0 B/op	 
 BenchmarkClientGetEndToEnd1000Inmemory	 2000000	      3907 ns/op	       7 B/op	       0 allocs/op
 ```
 
-GOMAXPROCS=4
+*GOMAXPROCS=4*
 
 net/http client:
 ```
@@ -530,3 +541,7 @@ uintBuf := fasthttp.AppendUint(nil, 1234)
   before returning from [RequestHandler](https://godoc.org/github.com/valyala/fasthttp#RequestHandler)
   if there are references to [RequestCtx](https://godoc.org/github.com/valyala/fasthttp#RequestCtx)
   or to its' members, which may be accessed by other goroutines.
+
+* *I didn't find an answer for my question here*
+
+  Try exploring [these questions](https://github.com/valyala/fasthttp/issues?q=label%3Aquestion).

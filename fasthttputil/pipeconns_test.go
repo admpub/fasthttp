@@ -3,10 +3,86 @@ package fasthttputil
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"testing"
 	"time"
 )
+
+func TestPipeConnsCloseWhileReadWriteConcurrent(t *testing.T) {
+	concurrency := 4
+	ch := make(chan struct{}, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			testPipeConnsCloseWhileReadWriteSerial(t)
+			ch <- struct{}{}
+		}()
+	}
+
+	for i := 0; i < concurrency; i++ {
+		select {
+		case <-ch:
+		case <-time.After(3*time.Second):
+			t.Fatalf("timeout")
+		}
+	}
+}
+
+func TestPipeConnsCloseWhileReadWriteSerial(t *testing.T) {
+	testPipeConnsCloseWhileReadWriteSerial(t)
+}
+
+func testPipeConnsCloseWhileReadWriteSerial(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		testPipeConnsCloseWhileReadWrite(t)
+	}
+}
+
+func testPipeConnsCloseWhileReadWrite(t *testing.T) {
+	pc := NewPipeConns()
+	readCh := make(chan struct{})
+	writeCh := make(chan struct{})
+	go func() {
+		_, err := io.Copy(ioutil.Discard, pc.Conn1())
+		if err != nil {
+			if err != errConnectionClosed {
+				t.Fatalf("unexpected error: %s", err)
+			}
+		}
+		close(readCh)
+	}()
+	go func() {
+		for {
+			_, err := pc.Conn2().Write([]byte("foobar"))
+			if err != nil {
+				if err != errConnectionClosed {
+					t.Fatalf("unexpected error: %s", err)
+				}
+				break
+			}
+		}
+		close(writeCh)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	if err := pc.Conn1().Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if err := pc.Conn2().Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-readCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+	select {
+	case <-writeCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
 
 func TestPipeConnsReadWriteSerial(t *testing.T) {
 	testPipeConnsReadWriteSerial(t)

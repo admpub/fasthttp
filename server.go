@@ -137,6 +137,8 @@ type RequestHandler func(ctx *RequestCtx)
 //
 // It is safe to call Server methods from concurrently running goroutines.
 type Server struct {
+	noCopy noCopy
+
 	// Handler for processing incoming requests.
 	Handler RequestHandler
 
@@ -149,6 +151,14 @@ type Server struct {
 	//
 	// DefaultConcurrency is used if not set.
 	Concurrency int
+
+	// Whether to disable keep-alive connections.
+	//
+	// The server will close all the incoming connections after sending
+	// the first response to client if this option is set to true.
+	//
+	// By default keep-alive connections are enabled.
+	DisableKeepalive bool
 
 	// Per-connection buffer size for requests' reading.
 	// This also limits the maximum header size.
@@ -343,6 +353,8 @@ func CompressHandlerLevel(h RequestHandler, level int) RequestHandler {
 // running goroutines. The only exception is TimeoutError*, which may be called
 // while other goroutines accessing RequestCtx.
 type RequestCtx struct {
+	noCopy noCopy
+
 	// Incoming request.
 	//
 	// Copying Request by value is forbidden. Use pointer to Request instead.
@@ -355,10 +367,9 @@ type RequestCtx struct {
 
 	userValues userData
 
-	id uint64
-
 	lastReadDuration time.Duration
 
+	connID         uint64
 	connRequestNum uint64
 	connTime       time.Time
 
@@ -523,7 +534,15 @@ var zeroTCPAddr = &net.TCPAddr{
 
 // ID returns unique ID of the request.
 func (ctx *RequestCtx) ID() uint64 {
-	return ctx.id
+	return (ctx.connID << 32) | ctx.connRequestNum
+}
+
+// ConnID returns unique connection ID.
+//
+// This ID may be used to match distinct requests to the same incoming
+// connection.
+func (ctx *RequestCtx) ConnID() uint64 {
+	return ctx.connID
 }
 
 // Time returns RequestHandler call time.
@@ -845,7 +864,7 @@ func (ctx *RequestCtx) Redirect(uri string, statusCode int) {
 // The redirect uri may be either absolute or relative to the current
 // request uri.
 func (ctx *RequestCtx) RedirectBytes(uri []byte, statusCode int) {
-	s := unsafeBytesToStr(uri)
+	s := b2s(uri)
 	ctx.Redirect(s, statusCode)
 }
 
@@ -1140,7 +1159,8 @@ func newTLSListenerEmbed(ln net.Listener, certData, keyData []byte) (net.Listene
 
 func newCertListener(ln net.Listener, cert *tls.Certificate) net.Listener {
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{*cert},
+		Certificates:             []tls.Certificate{*cert},
+		PreferServerCipherSuites: true,
 	}
 	return tls.NewListener(ln, tlsConfig)
 }
@@ -1176,12 +1196,22 @@ func (s *Server) Serve(ln net.Listener) error {
 			return err
 		}
 		if !wp.Serve(c) {
+			s.writeFastError(c, StatusServiceUnavailable,
+				"The connection cannot be served because Server.Concurrency limit exceeded")
 			c.Close()
 			if time.Since(lastOverflowErrorTime) > time.Minute {
 				s.logger().Printf("The incoming connection cannot be served, because %d concurrent connections are served. "+
 					"Try increasing Server.Concurrency", maxWorkersCount)
 				lastOverflowErrorTime = time.Now()
 			}
+
+			// The current server reached concurrency limit,
+			// so give other concurrently running servers a chance
+			// accepting incoming connections on the same address.
+			//
+			// There is a hope other servers didn't reach their
+			// concurrency limits yet :)
+			time.Sleep(100 * time.Millisecond)
 		}
 		c = nil
 	}
@@ -1211,7 +1241,6 @@ func acceptConn(s *Server, ln net.Listener, lastPerIPErrorTime *time.Time) (net.
 		if s.MaxConnsPerIP > 0 {
 			pic := wrapPerIPConn(s, c)
 			if pic == nil {
-				c.Close()
 				if time.Since(*lastPerIPErrorTime) > time.Minute {
 					s.logger().Printf("The number of connections from %s exceeds MaxConnsPerIP=%d",
 						getConnIP4(c), s.MaxConnsPerIP)
@@ -1219,7 +1248,7 @@ func acceptConn(s *Server, ln net.Listener, lastPerIPErrorTime *time.Time) (net.
 				}
 				continue
 			}
-			return pic, nil
+			c = pic
 		}
 		return c, nil
 	}
@@ -1233,6 +1262,8 @@ func wrapPerIPConn(s *Server, c net.Conn) net.Conn {
 	n := s.perIPConnCounter.Register(ip)
 	if n > s.MaxConnsPerIP {
 		s.perIPConnCounter.Unregister(ip)
+		s.writeFastError(c, StatusTooManyRequests, "The number of connections from your ip exceeds MaxConnsPerIP")
+		c.Close()
 		return nil
 	}
 	return acquirePerIPConn(c, ip, &s.perIPConnCounter)
@@ -1274,7 +1305,6 @@ func (s *Server) ServeConn(c net.Conn) error {
 	if s.MaxConnsPerIP > 0 {
 		pic := wrapPerIPConn(s, c)
 		if pic == nil {
-			c.Close()
 			return ErrPerIPConnLimit
 		}
 		c = pic
@@ -1283,6 +1313,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 	n := atomic.AddUint32(&s.concurrency, 1)
 	if n > uint32(s.getConcurrency()) {
 		atomic.AddUint32(&s.concurrency, ^uint32(0))
+		s.writeFastError(c, StatusServiceUnavailable, "The connection cannot be served because Server.Concurrency limit exceeded")
 		c.Close()
 		return ErrConcurrencyLimit
 	}
@@ -1312,39 +1343,43 @@ func (s *Server) getConcurrency() int {
 	return n
 }
 
+var globalConnID uint64
+
+func nextConnID() uint64 {
+	return atomic.AddUint64(&globalConnID, 1)
+}
+
 func (s *Server) serveConn(c net.Conn) error {
+	connRequestNum := uint64(0)
+	connID := nextConnID()
 	currentTime := time.Now()
 	connTime := currentTime
-	connRequestNum := uint64(0)
 
 	ctx := s.acquireCtx(c)
-	var br *bufio.Reader
-	var bw *bufio.Writer
+	ctx.connTime = connTime
+	var (
+		br *bufio.Reader
+		bw *bufio.Writer
 
-	var err error
-	var connectionClose bool
-	var isHTTP11 bool
-	var timeoutResponse *Response
-	var hijackHandler HijackHandler
+		err             error
+		timeoutResponse *Response
+		hijackHandler   HijackHandler
+
+		lastReadDeadlineTime  time.Time
+		lastWriteDeadlineTime time.Time
+
+		connectionClose bool
+		isHTTP11        bool
+	)
 	for {
-		ctx.id++
 		connRequestNum++
 		ctx.time = currentTime
 
 		if s.ReadTimeout > 0 || s.MaxKeepaliveDuration > 0 {
-			readTimeout := s.ReadTimeout
-			if s.MaxKeepaliveDuration > 0 {
-				connTimeout := s.MaxKeepaliveDuration - currentTime.Sub(connTime)
-				if connTimeout <= 0 {
-					err = ErrKeepaliveTimeout
-					break
-				}
-				if connTimeout < readTimeout {
-					readTimeout = connTimeout
-				}
-			}
-			if err = c.SetReadDeadline(currentTime.Add(readTimeout)); err != nil {
-				panic(fmt.Sprintf("BUG: error in SetReadDeadline(%s): %s", readTimeout, err))
+			lastReadDeadlineTime = s.updateReadDeadline(c, ctx, lastReadDeadlineTime)
+			if lastReadDeadlineTime.IsZero() {
+				err = ErrKeepaliveTimeout
+				break
 			}
 		}
 
@@ -1407,13 +1442,24 @@ func (s *Server) serveConn(c net.Conn) error {
 			}
 		}
 
-		connectionClose = ctx.Request.Header.connectionCloseFast()
+		connectionClose = s.DisableKeepalive || ctx.Request.Header.connectionCloseFast()
 		isHTTP11 = ctx.Request.Header.IsHTTP11()
 
+		ctx.connID = connID
 		ctx.connRequestNum = connRequestNum
 		ctx.connTime = connTime
 		ctx.time = currentTime
 		s.Handler(ctx)
+
+		timeoutResponse = ctx.timeoutResponse
+		if timeoutResponse != nil {
+			ctx = s.acquireCtx(c)
+			timeoutResponse.CopyTo(&ctx.Response)
+			if br != nil {
+				// Close connection, since br may be attached to the old ctx via ctx.fbr.
+				ctx.SetConnectionClose()
+			}
+		}
 
 		if !ctx.IsGet() && ctx.IsHead() {
 			ctx.Response.SkipBody = true
@@ -1425,39 +1471,17 @@ func (s *Server) serveConn(c net.Conn) error {
 
 		ctx.userValues.Reset()
 
-		timeoutResponse = ctx.timeoutResponse
-		if timeoutResponse != nil {
-			ctx = s.acquireCtx(c)
-			timeoutResponse.CopyTo(&ctx.Response)
-			if br != nil {
-				// Close connection, since br may be attached to the old ctx via ctx.fbr.
-				ctx.SetConnectionClose()
-			}
-		}
 		if s.MaxRequestsPerConn > 0 && connRequestNum >= uint64(s.MaxRequestsPerConn) {
 			ctx.SetConnectionClose()
 		}
 
 		if s.WriteTimeout > 0 || s.MaxKeepaliveDuration > 0 {
-			writeTimeout := s.WriteTimeout
-			if s.MaxKeepaliveDuration > 0 {
-				connTimeout := s.MaxKeepaliveDuration - time.Since(connTime)
-				if connTimeout <= 0 {
-					// MaxKeepAliveDuration exceeded, but let's try sending response anyway
-					// in 100ms with 'Connection: close' header.
-					ctx.SetConnectionClose()
-					connTimeout = 100 * time.Millisecond
-				}
-				if connTimeout < writeTimeout {
-					writeTimeout = connTimeout
-				}
-			}
-			if err = c.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
-				panic(fmt.Sprintf("BUG: error in SetWriteDeadline(%s): %s", writeTimeout, err))
-			}
+			lastWriteDeadlineTime = s.updateWriteDeadline(c, ctx, lastWriteDeadlineTime)
 		}
 
-		connectionClose = connectionClose || ctx.Response.ConnectionClose()
+		// Verify Request.Header.connectionCloseFast() again,
+		// since request handler might trigger full headers' parsing.
+		connectionClose = connectionClose || ctx.Request.Header.connectionCloseFast() || ctx.Response.ConnectionClose()
 		if connectionClose {
 			ctx.Response.Header.SetCanonical(strConnection, strClose)
 		} else if !isHTTP11 {
@@ -1523,6 +1547,59 @@ func (s *Server) serveConn(c net.Conn) error {
 	}
 	s.releaseCtx(ctx)
 	return err
+}
+
+func (s *Server) updateReadDeadline(c net.Conn, ctx *RequestCtx, lastDeadlineTime time.Time) time.Time {
+	readTimeout := s.ReadTimeout
+	currentTime := ctx.time
+	if s.MaxKeepaliveDuration > 0 {
+		connTimeout := s.MaxKeepaliveDuration - currentTime.Sub(ctx.connTime)
+		if connTimeout <= 0 {
+			return zeroTime
+		}
+		if connTimeout < readTimeout {
+			readTimeout = connTimeout
+		}
+	}
+
+	// Optimization: update read deadline only if more than 25%
+	// of the last read deadline exceeded.
+	// See https://github.com/golang/go/issues/15133 for details.
+	if currentTime.Sub(lastDeadlineTime) > (readTimeout >> 2) {
+		if err := c.SetReadDeadline(currentTime.Add(readTimeout)); err != nil {
+			panic(fmt.Sprintf("BUG: error in SetReadDeadline(%s): %s", readTimeout, err))
+		}
+		lastDeadlineTime = currentTime
+	}
+	return lastDeadlineTime
+}
+
+func (s *Server) updateWriteDeadline(c net.Conn, ctx *RequestCtx, lastDeadlineTime time.Time) time.Time {
+	writeTimeout := s.WriteTimeout
+	if s.MaxKeepaliveDuration > 0 {
+		connTimeout := s.MaxKeepaliveDuration - time.Since(ctx.connTime)
+		if connTimeout <= 0 {
+			// MaxKeepAliveDuration exceeded, but let's try sending response anyway
+			// in 100ms with 'Connection: close' header.
+			ctx.SetConnectionClose()
+			connTimeout = 100 * time.Millisecond
+		}
+		if connTimeout < writeTimeout {
+			writeTimeout = connTimeout
+		}
+	}
+
+	// Optimization: update write deadline only if more than 25%
+	// of the last write deadline exceeded.
+	// See https://github.com/golang/go/issues/15133 for details.
+	currentTime := time.Now()
+	if currentTime.Sub(lastDeadlineTime) > (writeTimeout >> 2) {
+		if err := c.SetWriteDeadline(currentTime.Add(writeTimeout)); err != nil {
+			panic(fmt.Sprintf("BUG: error in SetWriteDeadline(%s): %s", writeTimeout, err))
+		}
+		lastDeadlineTime = currentTime
+	}
+	return lastDeadlineTime
 }
 
 func hijackConnHandler(r io.Reader, c net.Conn, s *Server, h HijackHandler) {
@@ -1688,14 +1765,10 @@ func (s *Server) acquireCtx(c net.Conn) *RequestCtx {
 	v := s.ctxPool.Get()
 	var ctx *RequestCtx
 	if v == nil {
-		ctx = &RequestCtx{
+		v = &RequestCtx{
 			s: s,
-			c: c,
 		}
-		ctx.initID()
-		return ctx
 	}
-
 	ctx = v.(*RequestCtx)
 	ctx.c = c
 	return ctx
@@ -1716,9 +1789,9 @@ func (ctx *RequestCtx) Init(req *Request, remoteAddr net.Addr, logger Logger) {
 	if logger == nil {
 		logger = defaultLogger
 	}
+	ctx.connID = nextConnID()
 	ctx.logger.logger = logger
 	ctx.s = &fakeServer
-	ctx.initID()
 	req.CopyTo(&ctx.Request)
 	ctx.Response.Reset()
 	ctx.connRequestNum = 0
@@ -1753,12 +1826,6 @@ func (fa *fakeAddrer) Close() error {
 	panic("BUG: unexpected Close call")
 }
 
-var globalCtxID uint64
-
-func (ctx *RequestCtx) initID() {
-	ctx.id = (atomic.AddUint64(&globalCtxID, 1)) << 32
-}
-
 func (s *Server) releaseCtx(ctx *RequestCtx) {
 	if ctx.timeoutResponse != nil {
 		panic("BUG: cannot release timed out RequestCtx")
@@ -1781,4 +1848,16 @@ func (s *Server) getServerName() []byte {
 		serverName = v.([]byte)
 	}
 	return serverName
+}
+
+func (s *Server) writeFastError(w io.Writer, statusCode int, msg string) {
+	w.Write(statusLine(statusCode))
+	fmt.Fprintf(w, "Connection: close\r\n"+
+		"Server: %s\r\n"+
+		"Date: %s\r\n"+
+		"Content-Type: text/plain\r\n"+
+		"Content-Length: %d\r\n"+
+		"\r\n"+
+		"%s",
+		s.getServerName(), serverDate.Load(), len(msg), msg)
 }

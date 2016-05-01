@@ -10,11 +10,383 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/valyala/fasthttp/fasthttputil"
 )
+
+func TestServerResponseBodyStream(t *testing.T) {
+	ln := fasthttputil.NewInmemoryListener()
+
+	readyCh := make(chan struct{})
+	h := func(ctx *RequestCtx) {
+		ctx.SetConnectionClose()
+		ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
+			fmt.Fprintf(w, "first")
+			if err := w.Flush(); err != nil {
+				return
+			}
+			<-readyCh
+			fmt.Fprintf(w, "second")
+			// there is no need to flush w here, since it will
+			// be flushed automatically after returning from StreamWriter.
+		})
+	}
+
+	serverCh := make(chan struct{})
+	go func() {
+		if err := Serve(ln, h); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(serverCh)
+	}()
+
+	clientCh := make(chan struct{})
+	go func() {
+		c, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if _, err = c.Write([]byte("GET / HTTP/1.1\r\nHost: aa\r\n\r\n")); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		br := bufio.NewReader(c)
+		var respH ResponseHeader
+		if err = respH.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if respH.StatusCode() != StatusOK {
+			t.Fatalf("unexpected status code: %d. Expecting %d", respH.StatusCode(), StatusOK)
+		}
+
+		buf := make([]byte, 1024)
+		n, err := br.Read(buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		b := buf[:n]
+		if string(b) != "5\r\nfirst\r\n" {
+			t.Fatalf("unexpected result %q. Expecting %q", b, "5\r\nfirst\r\n")
+		}
+		close(readyCh)
+
+		n, err = br.Read(buf)
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		b = buf[:n]
+		if string(b) != "6\r\nsecond\r\n" {
+			t.Fatalf("unexpected result %q. Expecting %q", b, "6\r\nsecond\r\n")
+		}
+
+		tail, err := ioutil.ReadAll(br)
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if string(tail) != "0\r\n\r\n" {
+			t.Fatalf("unexpected tail %q. Expecting %q", tail, "0\r\n\r\n")
+		}
+
+		close(clientCh)
+	}()
+
+	select {
+	case <-clientCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
+func TestServerDisableKeepalive(t *testing.T) {
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			ctx.WriteString("OK")
+		},
+		DisableKeepalive: true,
+	}
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	serverCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(serverCh)
+	}()
+
+	clientCh := make(chan struct{})
+	go func() {
+		c, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if _, err = c.Write([]byte("GET / HTTP/1.1\r\nHost: aa\r\n\r\n")); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		br := bufio.NewReader(c)
+		var resp Response
+		if err = resp.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if resp.StatusCode() != StatusOK {
+			t.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode(), StatusOK)
+		}
+		if !resp.ConnectionClose() {
+			t.Fatalf("expecting 'Connection: close' response header")
+		}
+		if string(resp.Body()) != "OK" {
+			t.Fatalf("unexpected body: %q. Expecting %q", resp.Body(), "OK")
+		}
+
+		// make sure the connection is closed
+		data, err := ioutil.ReadAll(br)
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if len(data) > 0 {
+			t.Fatalf("unexpected data read from the connection: %q. Expecting empty data", data)
+		}
+
+		close(clientCh)
+	}()
+
+	select {
+	case <-clientCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
+func TestServerMaxConnsPerIPLimit(t *testing.T) {
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			ctx.WriteString("OK")
+		},
+		MaxConnsPerIP: 1,
+		Logger:        &customLogger{},
+	}
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	serverCh := make(chan struct{})
+	go func() {
+		fakeLN := &fakeIPListener{
+			Listener: ln,
+		}
+		if err := s.Serve(fakeLN); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(serverCh)
+	}()
+
+	clientCh := make(chan struct{})
+	go func() {
+		c1, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		c2, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		br := bufio.NewReader(c2)
+		var resp Response
+		if err = resp.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if resp.StatusCode() != StatusTooManyRequests {
+			t.Fatalf("unexpected status code for the second connection: %d. Expecting %d",
+				resp.StatusCode(), StatusTooManyRequests)
+		}
+
+		if _, err = c1.Write([]byte("GET / HTTP/1.1\r\nHost: aa\r\n\r\n")); err != nil {
+			t.Fatalf("unexpected error when writing to the first connection: %s", err)
+		}
+		br = bufio.NewReader(c1)
+		if err = resp.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if resp.StatusCode() != StatusOK {
+			t.Fatalf("unexpected status code for the first connection: %d. Expecting %d",
+				resp.StatusCode(), StatusOK)
+		}
+		if string(resp.Body()) != "OK" {
+			t.Fatalf("unexpected body for the first connection: %q. Expecting %q", resp.Body(), "OK")
+		}
+		close(clientCh)
+	}()
+
+	select {
+	case <-clientCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
+type fakeIPListener struct {
+	net.Listener
+}
+
+func (ln *fakeIPListener) Accept() (net.Conn, error) {
+	conn, err := ln.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &fakeIPConn{
+		Conn: conn,
+	}, nil
+}
+
+type fakeIPConn struct {
+	net.Conn
+}
+
+func (conn *fakeIPConn) RemoteAddr() net.Addr {
+	addr, err := net.ResolveTCPAddr("tcp4", "1.2.3.4:5789")
+	if err != nil {
+		panic(fmt.Sprintf("BUG: unexpected error: %s", err))
+	}
+	return addr
+}
+
+func TestServerConcurrencyLimit(t *testing.T) {
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			ctx.WriteString("OK")
+		},
+		Concurrency: 1,
+		Logger:      &customLogger{},
+	}
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	serverCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(serverCh)
+	}()
+
+	clientCh := make(chan struct{})
+	go func() {
+		c1, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		c2, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		br := bufio.NewReader(c2)
+		var resp Response
+		if err = resp.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if resp.StatusCode() != StatusServiceUnavailable {
+			t.Fatalf("unexpected status code for the second connection: %d. Expecting %d",
+				resp.StatusCode(), StatusServiceUnavailable)
+		}
+
+		if _, err = c1.Write([]byte("GET / HTTP/1.1\r\nHost: aa\r\n\r\n")); err != nil {
+			t.Fatalf("unexpected error when writing to the first connection: %s", err)
+		}
+		br = bufio.NewReader(c1)
+		if err = resp.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if resp.StatusCode() != StatusOK {
+			t.Fatalf("unexpected status code for the first connection: %d. Expecting %d",
+				resp.StatusCode(), StatusOK)
+		}
+		if string(resp.Body()) != "OK" {
+			t.Fatalf("unexpected body for the first connection: %q. Expecting %q", resp.Body(), "OK")
+		}
+		close(clientCh)
+	}()
+
+	select {
+	case <-clientCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
+func TestServerWriteFastError(t *testing.T) {
+	s := &Server{
+		Name: "foobar",
+	}
+	var buf bytes.Buffer
+	expectedBody := "access denied"
+	s.writeFastError(&buf, StatusForbidden, expectedBody)
+
+	br := bufio.NewReader(&buf)
+	var resp Response
+	if err := resp.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if resp.StatusCode() != StatusForbidden {
+		t.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode(), StatusForbidden)
+	}
+	body := resp.Body()
+	if string(body) != expectedBody {
+		t.Fatalf("unexpected body: %q. Expecting %q", body, expectedBody)
+	}
+	server := string(resp.Header.Server())
+	if server != s.Name {
+		t.Fatalf("unexpected server: %q. Expecting %q", server, s.Name)
+	}
+	contentType := string(resp.Header.ContentType())
+	if contentType != "text/plain" {
+		t.Fatalf("unexpected content-type: %q. Expecting %q", contentType, "text/plain")
+	}
+	if !resp.Header.ConnectionClose() {
+		t.Fatalf("expecting 'Connection: close' response header")
+	}
+}
 
 func TestServerServeTLSEmbed(t *testing.T) {
 	ln := fasthttputil.NewInmemoryListener()
@@ -1058,7 +1430,7 @@ func TestRequestCtxHijack(t *testing.T) {
 func TestRequestCtxInit(t *testing.T) {
 	var ctx RequestCtx
 	var logger customLogger
-	globalCtxID = 0x123456
+	globalConnID = 0x123456
 	ctx.Init(&ctx.Request, zeroTCPAddr, &logger)
 	ip := ctx.RemoteIP()
 	if !ip.IsUnspecified() {
@@ -1073,32 +1445,125 @@ func TestRequestCtxInit(t *testing.T) {
 }
 
 func TestTimeoutHandlerSuccess(t *testing.T) {
+	ln := fasthttputil.NewInmemoryListener()
 	h := func(ctx *RequestCtx) {
-		ctx.Success("aaa/bbb", []byte("real response"))
+		if string(ctx.Path()) == "/" {
+			ctx.Success("aaa/bbb", []byte("real response"))
+		}
 	}
 	s := &Server{
-		Handler: TimeoutHandler(h, 100*time.Millisecond, "timeout!!!"),
+		Handler: TimeoutHandler(h, 10*time.Second, "timeout!!!"),
 	}
-
-	rw := &readWriter{}
-	rw.r.WriteString("GET /foo HTTP/1.1\r\nHost: google.com\r\n\r\n")
-
-	ch := make(chan error)
+	serverCh := make(chan struct{})
 	go func() {
-		ch <- s.ServeConn(rw)
+		if err := s.Serve(ln); err != nil {
+			t.Fatalf("unexepcted error: %s", err)
+		}
+		close(serverCh)
 	}()
 
-	select {
-	case err := <-ch:
-		if err != nil {
-			t.Fatalf("Unexpected error from serveConn: %s", err)
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatalf("timeout")
+	concurrency := 20
+	clientCh := make(chan struct{}, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			conn, err := ln.Dial()
+			if err != nil {
+				t.Fatalf("unexepcted error: %s", err)
+			}
+			if _, err = conn.Write([]byte("GET / HTTP/1.1\r\nHost: google.com\r\n\r\n")); err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+			br := bufio.NewReader(conn)
+			verifyResponse(t, br, StatusOK, "aaa/bbb", "real response")
+			clientCh <- struct{}{}
+		}()
 	}
 
-	br := bufio.NewReader(&rw.w)
-	verifyResponse(t, br, StatusOK, "aaa/bbb", "real response")
+	for i := 0; i < concurrency; i++ {
+		select {
+		case <-clientCh:
+		case <-time.After(time.Second):
+			t.Fatalf("timeout")
+		}
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
+func TestTimeoutHandlerTimeout(t *testing.T) {
+	ln := fasthttputil.NewInmemoryListener()
+	readyCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	h := func(ctx *RequestCtx) {
+		if string(ctx.Path()) == "/" {
+			ctx.Success("aaa/bbb", []byte("real response"))
+		}
+		ctx.Success("aaa/bbb", []byte("real response"))
+		<-readyCh
+		doneCh <- struct{}{}
+	}
+	s := &Server{
+		Handler: TimeoutHandler(h, 20*time.Millisecond, "timeout!!!"),
+	}
+	serverCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Fatalf("unexepcted error: %s", err)
+		}
+		close(serverCh)
+	}()
+
+	concurrency := 20
+	clientCh := make(chan struct{}, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			conn, err := ln.Dial()
+			if err != nil {
+				t.Fatalf("unexepcted error: %s", err)
+			}
+			if _, err = conn.Write([]byte("GET / HTTP/1.1\r\nHost: google.com\r\n\r\n")); err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+			br := bufio.NewReader(conn)
+			verifyResponse(t, br, StatusRequestTimeout, string(defaultContentType), "timeout!!!")
+			clientCh <- struct{}{}
+		}()
+	}
+
+	for i := 0; i < concurrency; i++ {
+		select {
+		case <-clientCh:
+		case <-time.After(time.Second):
+			t.Fatalf("timeout")
+		}
+	}
+
+	close(readyCh)
+	for i := 0; i < concurrency; i++ {
+		select {
+		case <-doneCh:
+		case <-time.After(time.Second):
+			t.Fatalf("timeout")
+		}
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
 }
 
 func TestServerGetOnly(t *testing.T) {
@@ -1137,36 +1602,6 @@ func TestServerGetOnly(t *testing.T) {
 	if len(resp) > 0 {
 		t.Fatalf("unexpected response %q. Expecting zero", resp)
 	}
-}
-
-func TestTimeoutHandlerTimeout(t *testing.T) {
-	h := func(ctx *RequestCtx) {
-		time.Sleep(time.Second)
-		ctx.Success("aaa/bbb", []byte("this shouldn't pass to client because of timeout"))
-	}
-	s := &Server{
-		Handler: TimeoutHandler(h, 10*time.Millisecond, "timeout!!!"),
-	}
-
-	rw := &readWriter{}
-	rw.r.WriteString("GET /foo HTTP/1.1\r\nHost: google.com\r\n\r\n")
-
-	ch := make(chan error)
-	go func() {
-		ch <- s.ServeConn(rw)
-	}()
-
-	select {
-	case err := <-ch:
-		if err != nil {
-			t.Fatalf("Unexpected error from serveConn: %s", err)
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatalf("timeout")
-	}
-
-	br := bufio.NewReader(&rw.w)
-	verifyResponse(t, br, StatusRequestTimeout, string(defaultContentType), "timeout!!!")
 }
 
 func TestServerTimeoutErrorWithResponse(t *testing.T) {
@@ -1508,11 +1943,14 @@ func TestServerEmptyResponse(t *testing.T) {
 }
 
 type customLogger struct {
-	out string
+	lock sync.Mutex
+	out  string
 }
 
 func (cl *customLogger) Printf(format string, args ...interface{}) {
+	cl.lock.Lock()
 	cl.out += fmt.Sprintf(format, args...)[6:] + "\n"
+	cl.lock.Unlock()
 }
 
 func TestServerLogger(t *testing.T) {
@@ -1541,7 +1979,7 @@ func TestServerLogger(t *testing.T) {
 		},
 	}
 
-	globalCtxID = 0
+	globalConnID = 0
 	ch := make(chan error)
 	go func() {
 		ch <- s.ServeConn(rwx)

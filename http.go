@@ -18,6 +18,8 @@ import (
 //
 // Request instance MUST NOT be used from concurrently running goroutines.
 type Request struct {
+	noCopy noCopy
+
 	// Request header
 	//
 	// Copying Header by value is forbidden. Use pointer to Header instead.
@@ -46,6 +48,8 @@ type Request struct {
 //
 // Response instance MUST NOT be used from concurrently running goroutines.
 type Response struct {
+	noCopy noCopy
+
 	// Response header
 	//
 	// Copying Header by value is forbidden. Use pointer to Header instead.
@@ -1326,6 +1330,10 @@ func writeChunk(w *bufio.Writer, b []byte) error {
 	w.Write(strCRLF)
 	w.Write(b)
 	_, err := w.Write(strCRLF)
+	err1 := w.Flush()
+	if err == nil {
+		err = err1
+	}
 	return err
 }
 

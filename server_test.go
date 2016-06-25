@@ -17,12 +17,122 @@ import (
 	"github.com/valyala/fasthttp/fasthttputil"
 )
 
+func TestRequestCtxRedirect(t *testing.T) {
+	testRequestCtxRedirect(t, "http://qqq/", "", "http://qqq/")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "", "http://qqq/foo/bar?baz=111")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "#aaa", "http://qqq/foo/bar?baz=111#aaa")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "?abc=de&f", "http://qqq/foo/bar?abc=de&f")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "?abc=de&f#sf", "http://qqq/foo/bar?abc=de&f#sf")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "x.html", "http://qqq/foo/x.html")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "x.html?a=1", "http://qqq/foo/x.html?a=1")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "x.html#aaa=bbb&cc=ddd", "http://qqq/foo/x.html#aaa=bbb&cc=ddd")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "x.html?b=1#aaa=bbb&cc=ddd", "http://qqq/foo/x.html?b=1#aaa=bbb&cc=ddd")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "/x.html", "http://qqq/x.html")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "/x.html#aaa=bbb&cc=ddd", "http://qqq/x.html#aaa=bbb&cc=ddd")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "../x.html", "http://qqq/x.html")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "../../x.html", "http://qqq/x.html")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "./.././../x.html", "http://qqq/x.html")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "http://foo.bar/baz", "http://foo.bar/baz")
+	testRequestCtxRedirect(t, "http://qqq/foo/bar?baz=111", "https://foo.bar/baz", "https://foo.bar/baz")
+}
+
+func testRequestCtxRedirect(t *testing.T, origURL, redirectURL, expectedURL string) {
+	var ctx RequestCtx
+	var req Request
+	req.SetRequestURI(origURL)
+	ctx.Init(&req, nil, nil)
+
+	ctx.Redirect(redirectURL, StatusFound)
+	loc := ctx.Response.Header.Peek("Location")
+	if string(loc) != expectedURL {
+		t.Fatalf("unexpected redirect url %q. Expecting %q. origURL=%q, redirectURL=%q", loc, expectedURL, origURL, redirectURL)
+	}
+}
+
+func TestServerResponseServerHeader(t *testing.T) {
+	serverName := "foobar serv"
+
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			name := ctx.Response.Header.Server()
+			if string(name) != serverName {
+				fmt.Fprintf(ctx, "unexpected server name: %q. Expecting %q", name, serverName)
+			} else {
+				ctx.WriteString("OK")
+			}
+
+			// make sure the server name is sent to the client after ctx.Response.Reset()
+			ctx.NotFound()
+		},
+		Name: serverName,
+	}
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	serverCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(serverCh)
+	}()
+
+	clientCh := make(chan struct{})
+	go func() {
+		c, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if _, err = c.Write([]byte("GET / HTTP/1.1\r\nHost: aa\r\n\r\n")); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		br := bufio.NewReader(c)
+		var resp Response
+		if err = resp.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+
+		if resp.StatusCode() != StatusNotFound {
+			t.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode(), StatusNotFound)
+		}
+		if string(resp.Body()) != "404 Page not found" {
+			t.Fatalf("unexpected body: %q. Expecting %q", resp.Body(), "404 Page not found")
+		}
+		if string(resp.Header.Server()) != serverName {
+			t.Fatalf("unexpected server header: %q. Expecting %q", resp.Header.Server(), serverName)
+		}
+		if err = c.Close(); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(clientCh)
+	}()
+
+	select {
+	case <-clientCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
 func TestServerResponseBodyStream(t *testing.T) {
 	ln := fasthttputil.NewInmemoryListener()
 
 	readyCh := make(chan struct{})
 	h := func(ctx *RequestCtx) {
 		ctx.SetConnectionClose()
+		if ctx.IsBodyStream() {
+			t.Fatalf("IsBodyStream must return false")
+		}
 		ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
 			fmt.Fprintf(w, "first")
 			if err := w.Flush(); err != nil {
@@ -33,6 +143,9 @@ func TestServerResponseBodyStream(t *testing.T) {
 			// there is no need to flush w here, since it will
 			// be flushed automatically after returning from StreamWriter.
 		})
+		if !ctx.IsBodyStream() {
+			t.Fatalf("IsBodyStream must return true")
+		}
 	}
 
 	serverCh := make(chan struct{})
@@ -72,21 +185,12 @@ func TestServerResponseBodyStream(t *testing.T) {
 		}
 		close(readyCh)
 
-		n, err = br.Read(buf)
-		if err != nil {
-			t.Fatalf("unexpected error: %s", err)
-		}
-		b = buf[:n]
-		if string(b) != "6\r\nsecond\r\n" {
-			t.Fatalf("unexpected result %q. Expecting %q", b, "6\r\nsecond\r\n")
-		}
-
 		tail, err := ioutil.ReadAll(br)
 		if err != nil {
 			t.Fatalf("unexpected error: %s", err)
 		}
-		if string(tail) != "0\r\n\r\n" {
-			t.Fatalf("unexpected tail %q. Expecting %q", tail, "0\r\n\r\n")
+		if string(tail) != "6\r\nsecond\r\n0\r\n\r\n" {
+			t.Fatalf("unexpected tail %q. Expecting %q", tail, "6\r\nsecond\r\n0\r\n\r\n")
 		}
 
 		close(clientCh)
@@ -1079,6 +1183,29 @@ func TestCompressHandler(t *testing.T) {
 		t.Fatalf("unexpected body %q. Expecting %q", body, expectedBody)
 	}
 
+	// an attempt to compress already compressed response
+	ctx.Request.Reset()
+	ctx.Response.Reset()
+	ctx.Request.Header.Set("Accept-Encoding", "gzip, deflate, sdhc")
+	hh := CompressHandler(h)
+	hh(&ctx)
+	s = ctx.Response.String()
+	br = bufio.NewReader(bytes.NewBufferString(s))
+	if err := resp.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	ce = resp.Header.Peek("Content-Encoding")
+	if string(ce) != "gzip" {
+		t.Fatalf("unexpected Content-Encoding: %q. Expecting %q", ce, "gzip")
+	}
+	body, err = resp.BodyGunzip()
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if string(body) != expectedBody {
+		t.Fatalf("unexpected body %q. Expecting %q", body, expectedBody)
+	}
+
 	// verify deflate-compressed response
 	ctx.Request.Reset()
 	ctx.Response.Reset()
@@ -1196,6 +1323,9 @@ func TestRequestCtxSetBodyStreamWriter(t *testing.T) {
 	var req Request
 	ctx.Init(&req, nil, defaultLogger)
 
+	if ctx.IsBodyStream() {
+		t.Fatalf("IsBodyStream must return false")
+	}
 	ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
 		fmt.Fprintf(w, "body writer line 1\n")
 		if err := w.Flush(); err != nil {
@@ -1203,6 +1333,9 @@ func TestRequestCtxSetBodyStreamWriter(t *testing.T) {
 		}
 		fmt.Fprintf(w, "body writer line 2\n")
 	})
+	if !ctx.IsBodyStream() {
+		t.Fatalf("IsBodyStream must return true")
+	}
 
 	s := ctx.Response.String()
 
@@ -1503,9 +1636,6 @@ func TestTimeoutHandlerTimeout(t *testing.T) {
 	readyCh := make(chan struct{})
 	doneCh := make(chan struct{})
 	h := func(ctx *RequestCtx) {
-		if string(ctx.Path()) == "/" {
-			ctx.Success("aaa/bbb", []byte("real response"))
-		}
 		ctx.Success("aaa/bbb", []byte("real response"))
 		<-readyCh
 		doneCh <- struct{}{}

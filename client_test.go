@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -675,8 +676,19 @@ func TestClientConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
+func skipIfNotUnix(tb testing.TB) {
+	switch runtime.GOOS {
+	case "android", "nacl", "plan9", "windows":
+		tb.Skipf("%s does not support unix sockets", runtime.GOOS)
+	}
+	if runtime.GOOS == "darwin" && (runtime.GOARCH == "arm" || runtime.GOARCH == "arm64") {
+		tb.Skip("iOS does not support unix, unixgram")
+	}
+}
+
 func TestHostClientGet(t *testing.T) {
-	addr := "./TestHostClientGet.unix"
+	skipIfNotUnix(t)
+	addr := "TestHostClientGet.unix"
 	s := startEchoServer(t, "unix", addr)
 	defer s.Stop()
 	c := createEchoClient(t, "unix", addr)
@@ -685,6 +697,7 @@ func TestHostClientGet(t *testing.T) {
 }
 
 func TestHostClientPost(t *testing.T) {
+	skipIfNotUnix(t)
 	addr := "./TestHostClientPost.unix"
 	s := startEchoServer(t, "unix", addr)
 	defer s.Stop()
@@ -694,6 +707,7 @@ func TestHostClientPost(t *testing.T) {
 }
 
 func TestHostClientConcurrent(t *testing.T) {
+	skipIfNotUnix(t)
 	addr := "./TestHostClientConcurrent.unix"
 	s := startEchoServer(t, "unix", addr)
 	defer s.Stop()

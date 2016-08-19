@@ -71,6 +71,11 @@ type Response struct {
 	// Use it for writing HEAD responses.
 	SkipBody bool
 
+	// Response.Write() skips writing response (both header and body) if set
+	// to true. Use it to take complete control over what's sent after
+	// hijacking a RequestCtx.
+	SkipResponse bool
+
 	keepBodyBuffer bool
 }
 
@@ -574,6 +579,7 @@ func (resp *Response) copyToSkipBody(dst *Response) {
 	dst.Reset()
 	resp.Header.CopyTo(&dst.Header)
 	dst.SkipBody = resp.SkipBody
+	dst.SkipResponse = resp.SkipResponse
 }
 
 func swapRequestBody(a, b *Request) {
@@ -767,6 +773,7 @@ func (resp *Response) Reset() {
 	resp.Header.Reset()
 	resp.resetSkipHeader()
 	resp.SkipBody = false
+	resp.SkipResponse = false
 }
 
 func (resp *Response) resetSkipHeader() {
@@ -1241,6 +1248,9 @@ func (w *flushWriter) Write(p []byte) (int, error) {
 //
 // See also WriteTo.
 func (resp *Response) Write(w *bufio.Writer) error {
+	if resp.SkipResponse {
+		return nil
+	}
 	sendBody := !resp.mustSkipBody()
 
 	if resp.bodyStream != nil {

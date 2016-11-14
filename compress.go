@@ -6,10 +6,10 @@ import (
 	"os"
 	"sync"
 
+	"github.com/admpub/fasthttp/stackless"
 	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zlib"
-	"github.com/valyala/fasthttp/stackless"
 )
 
 // Supported compression levels.

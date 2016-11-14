@@ -34,6 +34,8 @@ var replaces = []*Replace{
 	if resp.SkipResponse {
 		return nil
 	}`, nil},
+
+	&Replace{`"github.com/valyala/fasthttp/stackless"`, `"github.com/admpub/fasthttp/stackless"`, nil},
 }
 
 func main() {

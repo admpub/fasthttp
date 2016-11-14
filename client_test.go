@@ -721,13 +721,13 @@ func TestClientIdempotentRequest(t *testing.T) {
 	var args Args
 
 	dialsCount = 0
-	statusCode, body, err = c.Post(nil, "http://foobar/a/b", &args)
+	_, _, err = c.Post(nil, "http://foobar/a/b", &args)
 	if err == nil {
 		t.Fatalf("expecting error")
 	}
 
 	dialsCount = 0
-	statusCode, body, err = c.Post(nil, "http://foobar/a/b", nil)
+	_, _, err = c.Post(nil, "http://foobar/a/b", nil)
 	if err == nil {
 		t.Fatalf("expecting error")
 	}
@@ -772,6 +772,23 @@ func (r *singleReadConn) Close() error {
 	return nil
 }
 
+func TestClientHTTPSInvalidServerName(t *testing.T) {
+	addrHTTPS := "127.0.0.1:57794"
+	sHTTPS := startEchoServerTLS(t, "tcp", addrHTTPS)
+	defer sHTTPS.Stop()
+
+	var c Client
+
+	addr := "https://" + addrHTTPS
+
+	for i := 0; i < 10; i++ {
+		_, _, err := c.GetTimeout(nil, addr, time.Second)
+		if err == nil {
+			t.Fatalf("expecting TLS error")
+		}
+	}
+}
+
 func TestClientHTTPSConcurrent(t *testing.T) {
 	addrHTTP := "127.0.0.1:56793"
 	sHTTP := startEchoServer(t, "tcp", addrHTTP)
@@ -780,6 +797,12 @@ func TestClientHTTPSConcurrent(t *testing.T) {
 	addrHTTPS := "127.0.0.1:56794"
 	sHTTPS := startEchoServerTLS(t, "tcp", addrHTTPS)
 	defer sHTTPS.Stop()
+
+	c := &Client{
+		TLSConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
@@ -790,8 +813,8 @@ func TestClientHTTPSConcurrent(t *testing.T) {
 		}
 		go func() {
 			defer wg.Done()
-			testClientGet(t, &defaultClient, addr, 20)
-			testClientPost(t, &defaultClient, addr, 10)
+			testClientGet(t, c, addr, 20)
+			testClientPost(t, c, addr, 10)
 		}()
 	}
 	wg.Wait()
@@ -1052,9 +1075,9 @@ func startEchoServerExt(t *testing.T, network, addr string, isTLS bool) *testEch
 	if isTLS {
 		certFile := "./ssl-cert-snakeoil.pem"
 		keyFile := "./ssl-cert-snakeoil.key"
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
-			t.Fatalf("Cannot load TLS certificate: %s", err)
+		cert, err1 := tls.LoadX509KeyPair(certFile, keyFile)
+		if err1 != nil {
+			t.Fatalf("Cannot load TLS certificate: %s", err1)
 		}
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{cert},

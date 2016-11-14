@@ -1217,7 +1217,9 @@ func (resp *Response) gzipBody(level int) error {
 		}
 
 		// Hack: swap resp.body with w.
-		responseBodyPool.Put(resp.body)
+		if resp.body != nil {
+			responseBodyPool.Put(resp.body)
+		}
 		resp.body = w
 	}
 	resp.Header.SetCanonical(strContentEncoding, strGzip)
@@ -1257,7 +1259,9 @@ func (resp *Response) deflateBody(level int) error {
 		}
 
 		// Hack: swap resp.body with w.
-		responseBodyPool.Put(resp.body)
+		if resp.body != nil {
+			responseBodyPool.Put(resp.body)
+		}
 		resp.body = w
 	}
 	resp.Header.SetCanonical(strContentEncoding, strDeflate)

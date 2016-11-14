@@ -441,6 +441,11 @@ func (ctx *RequestCtx) Hijack(handler HijackHandler) {
 	ctx.hijackHandler = handler
 }
 
+// Hijacked returns true after Hijack is called.
+func (ctx *RequestCtx) Hijacked() bool {
+	return ctx.hijackHandler != nil
+}
+
 // SetUserValue stores the given value (arbitrary object)
 // under the given key in ctx.
 //
@@ -500,7 +505,7 @@ type connTLSer interface {
 // tls.Conn is an encrypted connection (aka SSL, HTTPS).
 func (ctx *RequestCtx) IsTLS() bool {
 	// cast to (connTLSer) instead of (*tls.Conn), since it catches
-	// cases with overriden tls.Conn such as:
+	// cases with overridden tls.Conn such as:
 	//
 	// type customConn struct {
 	//     *tls.Conn
@@ -1484,6 +1489,8 @@ func (s *Server) serveConn(c net.Conn) error {
 		if err != nil {
 			if err == io.EOF {
 				err = nil
+			} else {
+				bw = writeErrorResponse(bw, ctx, err)
 			}
 			break
 		}
@@ -1513,6 +1520,7 @@ func (s *Server) serveConn(c net.Conn) error {
 				br = nil
 			}
 			if err != nil {
+				bw = writeErrorResponse(bw, ctx, err)
 				break
 			}
 		}
@@ -1853,7 +1861,7 @@ func (ctx *RequestCtx) Init2(conn net.Conn, logger Logger, reduceMemoryUsage boo
 	ctx.c = conn
 	ctx.logger.logger = logger
 	ctx.connID = nextConnID()
-	ctx.s = &fakeServer
+	ctx.s = fakeServer
 	ctx.connRequestNum = 0
 	ctx.connTime = time.Now()
 	ctx.time = ctx.connTime
@@ -1883,7 +1891,10 @@ func (ctx *RequestCtx) Init(req *Request, remoteAddr net.Addr, logger Logger) {
 	req.CopyTo(&ctx.Request)
 }
 
-var fakeServer Server
+var fakeServer = &Server{
+	// Initialize concurrencyCh for TimeoutHandler
+	concurrencyCh: make(chan struct{}, DefaultConcurrency),
+}
 
 type fakeAddrer struct {
 	net.Conn
@@ -1945,4 +1956,18 @@ func (s *Server) writeFastError(w io.Writer, statusCode int, msg string) {
 		"\r\n"+
 		"%s",
 		s.getServerName(), serverDate.Load(), len(msg), msg)
+}
+
+func writeErrorResponse(bw *bufio.Writer, ctx *RequestCtx, err error) *bufio.Writer {
+	if _, ok := err.(*ErrSmallBuffer); ok {
+		ctx.Error("Too big request header", StatusRequestHeaderFieldsTooLarge)
+	} else {
+		ctx.Error("Error when parsing request", StatusBadRequest)
+	}
+	if bw == nil {
+		bw = acquireWriter(ctx)
+	}
+	writeResponse(ctx, bw)
+	bw.Flush()
+	return bw
 }

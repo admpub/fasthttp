@@ -295,7 +295,7 @@ type Server struct {
 	//
 	// Disabled header names' normalization may be useful only for proxying
 	// incoming requests to other servers expecting case-sensitive
-	// header names. See https://github.com/valyala/fasthttp/issues/57
+	// header names. See https://github.com/admpub/fasthttp/issues/57
 	// for details.
 	//
 	// By default request and response header names are normalized, i.e.
@@ -1619,7 +1619,7 @@ func (s *Server) Serve(ln net.Listener) error {
 			// There is a hope other servers didn't reach their
 			// concurrency limits yet :)
 			//
-			// See also: https://github.com/valyala/fasthttp/pull/485#discussion_r239994990
+			// See also: https://github.com/admpub/fasthttp/pull/485#discussion_r239994990
 			if s.SleepWhenConcurrencyLimitsExceeded > 0 {
 				time.Sleep(s.SleepWhenConcurrencyLimitsExceeded)
 			}

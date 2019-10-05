@@ -35,7 +35,7 @@ var replaces = []*Replace{
 		return nil
 	}`, nil},
 
-	&Replace{`"github.com/valyala/fasthttp/stackless"`, `"github.com/admpub/fasthttp/stackless"`, nil},
+	&Replace{`"github.com/admpub/fasthttp/stackless"`, `"github.com/admpub/fasthttp/stackless"`, nil},
 }
 
 func main() {

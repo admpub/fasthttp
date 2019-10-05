@@ -9,8 +9,8 @@ import (
 	"flag"
 	"log"
 
-	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/expvarhandler"
+	"github.com/admpub/fasthttp"
+	"github.com/admpub/fasthttp/expvarhandler"
 )
 
 var (

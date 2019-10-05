@@ -3,6 +3,7 @@ package fasthttp
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -183,6 +184,32 @@ func testURIPathNormalize(t *testing.T, u *URI, requestURI, expectedPath string)
 	}
 }
 
+func TestURINoNormalization(t *testing.T) {
+	var u URI
+	irregularPath := "/aaa%2Fbbb%2F%2E.%2Fxxx"
+	u.Parse(nil, []byte(irregularPath))
+	u.DisablePathNormalizing = true
+	if string(u.RequestURI()) != irregularPath {
+		t.Fatalf("Unexpected path %q. Expected %q.", u.Path(), irregularPath)
+	}
+}
+
+func TestURICopyTo(t *testing.T) {
+	var u URI
+	var copyU URI
+	u.CopyTo(&copyU)
+	if !reflect.DeepEqual(u, copyU) {
+		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU)
+	}
+
+	u.UpdateBytes([]byte("https://google.com/foo?bar=baz&baraz#qqqq"))
+	u.CopyTo(&copyU)
+	if !reflect.DeepEqual(u, copyU) {
+		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU)
+	}
+
+}
+
 func TestURIFullURI(t *testing.T) {
 	var args Args
 
@@ -275,7 +302,7 @@ func TestURIParse(t *testing.T) {
 
 	// encoded path
 	testURIParse(t, &u, "aa.com", "/Test%20+%20%D0%BF%D1%80%D0%B8?asdf=%20%20&s=12#sdf",
-		"http://aa.com/Test%20%2B%20%D0%BF%D1%80%D0%B8?asdf=%20%20&s=12#sdf", "aa.com", "/Test + при", "/Test%20+%20%D0%BF%D1%80%D0%B8", "asdf=%20%20&s=12", "sdf")
+		"http://aa.com/Test%20+%20%D0%BF%D1%80%D0%B8?asdf=%20%20&s=12#sdf", "aa.com", "/Test + при", "/Test%20+%20%D0%BF%D1%80%D0%B8", "asdf=%20%20&s=12", "sdf")
 
 	// host in uppercase
 	testURIParse(t, &u, "FOObar.COM", "/bC?De=F#Gh",

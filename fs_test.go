@@ -14,6 +14,14 @@ import (
 	"time"
 )
 
+type TestLogger struct {
+	t *testing.T
+}
+
+func (t TestLogger) Printf(format string, args ...interface{}) {
+	t.t.Logf(format, args...)
+}
+
 func TestNewVHostPathRewriter(t *testing.T) {
 	var ctx RequestCtx
 	var req Request
@@ -53,10 +61,47 @@ func TestNewVHostPathRewriterMaliciousHost(t *testing.T) {
 	}
 }
 
+func testPathNotFound(t *testing.T, pathNotFoundFunc RequestHandler) {
+	var ctx RequestCtx
+	var req Request
+	req.SetRequestURI("http//some.url/file")
+	ctx.Init(&req, nil, TestLogger{t})
+
+	fs := &FS{
+		Root:         "./",
+		PathNotFound: pathNotFoundFunc,
+	}
+	fs.NewRequestHandler()(&ctx)
+
+	if pathNotFoundFunc == nil {
+		// different to ...
+		if !bytes.Equal(ctx.Response.Body(),
+			[]byte("Cannot open requested path")) {
+			t.Fatalf("response defers. Response: %q", ctx.Response.Body())
+		}
+	} else {
+		// Equals to ...
+		if bytes.Equal(ctx.Response.Body(),
+			[]byte("Cannot open requested path")) {
+			t.Fatalf("respones defers. Response: %q", ctx.Response.Body())
+		}
+	}
+}
+
+func TestPathNotFound(t *testing.T) {
+	testPathNotFound(t, nil)
+}
+
+func TestPathNotFoundFunc(t *testing.T) {
+	testPathNotFound(t, func(ctx *RequestCtx) {
+		ctx.WriteString("Not found hehe")
+	})
+}
+
 func TestServeFileHead(t *testing.T) {
 	var ctx RequestCtx
 	var req Request
-	req.Header.SetMethod("HEAD")
+	req.Header.SetMethod(MethodHead)
 	req.SetRequestURI("http://foobar.com/baz")
 	ctx.Init(&req, nil, nil)
 
@@ -70,7 +115,7 @@ func TestServeFileHead(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	ce := resp.Header.Peek("Content-Encoding")
+	ce := resp.Header.Peek(HeaderContentEncoding)
 	if len(ce) > 0 {
 		t.Fatalf("Unexpected 'Content-Encoding' %q", ce)
 	}
@@ -127,7 +172,7 @@ func TestServeFileSmallNoReadFrom(t *testing.T) {
 		t.Fatalf("expected %d bytes, got %d bytes", len(teststr), n)
 	}
 
-	body := string(buf.Bytes())
+	body := buf.String()
 	if body != teststr {
 		t.Fatalf("expected '%s'", teststr)
 	}
@@ -145,7 +190,7 @@ func TestServeFileCompressed(t *testing.T) {
 	var ctx RequestCtx
 	var req Request
 	req.SetRequestURI("http://foobar.com/baz")
-	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set(HeaderAcceptEncoding, "gzip")
 	ctx.Init(&req, nil, nil)
 
 	ServeFile(&ctx, "fs.go")
@@ -157,7 +202,7 @@ func TestServeFileCompressed(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	ce := resp.Header.Peek("Content-Encoding")
+	ce := resp.Header.Peek(HeaderContentEncoding)
 	if string(ce) != "gzip" {
 		t.Fatalf("Unexpected 'Content-Encoding' %q. Expecting %q", ce, "gzip")
 	}
@@ -179,7 +224,7 @@ func TestServeFileUncompressed(t *testing.T) {
 	var ctx RequestCtx
 	var req Request
 	req.SetRequestURI("http://foobar.com/baz")
-	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set(HeaderAcceptEncoding, "gzip")
 	ctx.Init(&req, nil, nil)
 
 	ServeFileUncompressed(&ctx, "fs.go")
@@ -191,7 +236,7 @@ func TestServeFileUncompressed(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	ce := resp.Header.Peek("Content-Encoding")
+	ce := resp.Header.Peek(HeaderContentEncoding)
 	if len(ce) > 0 {
 		t.Fatalf("Unexpected 'Content-Encoding' %q", ce)
 	}
@@ -274,7 +319,7 @@ func testFSByteRange(t *testing.T, h RequestHandler, filePath string) {
 	if resp.StatusCode() != StatusPartialContent {
 		t.Fatalf("unexpected status code: %d. Expecting %d. filePath=%q", resp.StatusCode(), StatusPartialContent, filePath)
 	}
-	cr := resp.Header.Peek("Content-Range")
+	cr := resp.Header.Peek(HeaderContentRange)
 
 	expectedCR := fmt.Sprintf("bytes %d-%d/%d", startPos, endPos, fileSize)
 	if string(cr) != expectedCR {
@@ -428,7 +473,7 @@ func testFSCompress(t *testing.T, h RequestHandler, filePath string) {
 	if resp.StatusCode() != StatusOK {
 		t.Fatalf("unexpected status code: %d. Expecting %d. filePath=%q", resp.StatusCode(), StatusOK, filePath)
 	}
-	ce := resp.Header.Peek("Content-Encoding")
+	ce := resp.Header.Peek(HeaderContentEncoding)
 	if string(ce) != "" {
 		t.Fatalf("unexpected content-encoding %q. Expecting empty string. filePath=%q", ce, filePath)
 	}
@@ -437,7 +482,7 @@ func testFSCompress(t *testing.T, h RequestHandler, filePath string) {
 	// request compressed file
 	ctx.Request.Reset()
 	ctx.Request.SetRequestURI(filePath)
-	ctx.Request.Header.Set("Accept-Encoding", "gzip")
+	ctx.Request.Header.Set(HeaderAcceptEncoding, "gzip")
 	h(&ctx)
 	s = ctx.Response.String()
 	br = bufio.NewReader(bytes.NewBufferString(s))
@@ -447,7 +492,7 @@ func testFSCompress(t *testing.T, h RequestHandler, filePath string) {
 	if resp.StatusCode() != StatusOK {
 		t.Fatalf("unexpected status code: %d. Expecting %d. filePath=%q", resp.StatusCode(), StatusOK, filePath)
 	}
-	ce = resp.Header.Peek("Content-Encoding")
+	ce = resp.Header.Peek(HeaderContentEncoding)
 	if string(ce) != "gzip" {
 		t.Fatalf("unexpected content-encoding %q. Expecting %q. filePath=%q", ce, "gzip", filePath)
 	}
@@ -489,7 +534,7 @@ func TestFSHandlerSingleThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot read dirnames in cwd: %s", err)
 	}
-	sort.Sort(sort.StringSlice(filenames))
+	sort.Strings(filenames)
 
 	for i := 0; i < 3; i++ {
 		fsHandlerTest(t, requestHandler, filenames)
@@ -509,7 +554,7 @@ func TestFSHandlerConcurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot read dirnames in cwd: %s", err)
 	}
-	sort.Sort(sort.StringSlice(filenames))
+	sort.Strings(filenames)
 
 	concurrency := 10
 	ch := make(chan struct{}, concurrency)
@@ -635,5 +680,27 @@ func testFileExtension(t *testing.T, path string, compressed bool, compressedFil
 	ext := fileExtension(path, compressed, compressedFileSuffix)
 	if ext != expectedExt {
 		t.Fatalf("unexpected file extension for file %q: %q. Expecting %q", path, ext, expectedExt)
+	}
+}
+
+func TestServeFileContentType(t *testing.T) {
+	var ctx RequestCtx
+	var req Request
+	req.Header.SetMethod(MethodGet)
+	req.SetRequestURI("http://foobar.com/baz")
+	ctx.Init(&req, nil, nil)
+
+	ServeFile(&ctx, "testdata/test.png")
+
+	var resp Response
+	s := ctx.Response.String()
+	br := bufio.NewReader(bytes.NewBufferString(s))
+	if err := resp.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	expected := []byte("image/png")
+	if !bytes.Equal(resp.Header.ContentType(), expected) {
+		t.Fatalf("Unexpected Content-Type, expected: %q got %q", expected, resp.Header.ContentType())
 	}
 }

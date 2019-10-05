@@ -7,10 +7,66 @@ import (
 	"io"
 	"io/ioutil"
 	"mime/multipart"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/valyala/bytebufferpool"
 )
+
+func TestRequestCopyTo(t *testing.T) {
+	var req Request
+
+	// empty copy
+	testRequestCopyTo(t, &req)
+
+	// init
+	expectedContentType := "application/x-www-form-urlencoded; charset=UTF-8"
+	expectedHost := "test.com"
+	expectedBody := "0123=56789"
+	s := fmt.Sprintf("POST / HTTP/1.1\r\nHost: %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n%s",
+		expectedHost, expectedContentType, len(expectedBody), expectedBody)
+	br := bufio.NewReader(bytes.NewBufferString(s))
+	if err := req.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	testRequestCopyTo(t, &req)
+
+}
+
+func TestResponseCopyTo(t *testing.T) {
+	var resp Response
+
+	// empty copy
+	testResponseCopyTo(t, &resp)
+
+	// init resp
+	resp.laddr = zeroTCPAddr
+	resp.SkipBody = true
+	resp.Header.SetStatusCode(200)
+	resp.SetBodyString("test")
+	testResponseCopyTo(t, &resp)
+
+}
+
+func testRequestCopyTo(t *testing.T, src *Request) {
+	var dst Request
+	src.CopyTo(&dst)
+
+	if !reflect.DeepEqual(*src, dst) {
+		t.Fatalf("RequestCopyTo fail, src: \n%+v\ndst: \n%+v\n", *src, dst)
+	}
+}
+
+func testResponseCopyTo(t *testing.T, src *Response) {
+	var dst Response
+	src.CopyTo(&dst)
+
+	if !reflect.DeepEqual(*src, dst) {
+		t.Fatalf("ResponseCopyTo fail, src: \n%+v\ndst: \n%+v\n", *src, dst)
+	}
+}
 
 func TestResponseBodyStreamDeflate(t *testing.T) {
 	body := createFixedBody(1e5)
@@ -393,7 +449,7 @@ func TestRequestUpdateURI(t *testing.T) {
 	if !strings.HasPrefix(s, "GET /123/432.html?aaa=bcse") {
 		t.Fatalf("cannot find %q in %q", "GET /123/432.html?aaa=bcse", s)
 	}
-	if strings.Index(s, "\r\nHost: foobar.com\r\n") < 0 {
+	if !strings.Contains(s, "\r\nHost: foobar.com\r\n") {
 		t.Fatalf("cannot find %q in %q", "\r\nHost: foobar.com\r\n", s)
 	}
 }
@@ -490,7 +546,7 @@ type bodyWriterTo interface {
 }
 
 func testBodyWriteTo(t *testing.T, bw bodyWriterTo, expectedS string, isRetainedBody bool) {
-	var buf ByteBuffer
+	var buf bytebufferpool.ByteBuffer
 	if err := bw.BodyWriteTo(&buf); err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
@@ -564,7 +620,7 @@ func TestResponseWriteTo(t *testing.T) {
 	r.SetBodyString("foobar")
 
 	s := r.String()
-	var buf ByteBuffer
+	var buf bytebufferpool.ByteBuffer
 	n, err := r.WriteTo(&buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -583,7 +639,7 @@ func TestRequestWriteTo(t *testing.T) {
 	r.SetRequestURI("http://foobar.com/aaa/bbb")
 
 	s := r.String()
-	var buf ByteBuffer
+	var buf bytebufferpool.ByteBuffer
 	n, err := r.WriteTo(&buf)
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -646,7 +702,7 @@ func TestResponseSkipBody(t *testing.T) {
 func TestRequestNoContentLength(t *testing.T) {
 	var r Request
 
-	r.Header.SetMethod("HEAD")
+	r.Header.SetMethod(MethodHead)
 	r.Header.SetHost("foobar")
 
 	s := r.String()
@@ -654,7 +710,7 @@ func TestRequestNoContentLength(t *testing.T) {
 		t.Fatalf("unexpected content-length in HEAD request %q", s)
 	}
 
-	r.Header.SetMethod("POST")
+	r.Header.SetMethod(MethodPost)
 	fmt.Fprintf(r.BodyWriter(), "foobar body")
 	s = r.String()
 	if !strings.Contains(s, "Content-Length: ") {
@@ -674,8 +730,8 @@ func TestRequestReadGzippedBody(t *testing.T) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	if string(r.Header.Peek("Content-Encoding")) != "gzip" {
-		t.Fatalf("unexpected content-encoding: %q. Expecting %q", r.Header.Peek("Content-Encoding"), "gzip")
+	if string(r.Header.Peek(HeaderContentEncoding)) != "gzip" {
+		t.Fatalf("unexpected content-encoding: %q. Expecting %q", r.Header.Peek(HeaderContentEncoding), "gzip")
 	}
 	if r.Header.ContentLength() != len(body) {
 		t.Fatalf("unexpected content-length: %d. Expecting %d", r.Header.ContentLength(), len(body))
@@ -857,7 +913,7 @@ func testResponseDeflateExt(t *testing.T, r *Response, s string) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	ce := r1.Header.Peek("Content-Encoding")
+	ce := r1.Header.Peek(HeaderContentEncoding)
 	var body []byte
 	if isCompressible {
 		if string(ce) != "deflate" {
@@ -910,7 +966,7 @@ func testResponseGzipExt(t *testing.T, r *Response, s string) {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
-	ce := r1.Header.Peek("Content-Encoding")
+	ce := r1.Header.Peek(HeaderContentEncoding)
 	var body []byte
 	if isCompressible {
 		if string(ce) != "gzip" {
@@ -1100,7 +1156,7 @@ func TestRequestString(t *testing.T) {
 	var r Request
 	r.SetRequestURI("http://foobar.com/aaa")
 	s := r.String()
-	expectedS := "GET /aaa HTTP/1.1\r\nUser-Agent: fasthttp\r\nHost: foobar.com\r\n\r\n"
+	expectedS := "GET /aaa HTTP/1.1\r\nHost: foobar.com\r\n\r\n"
 	if s != expectedS {
 		t.Fatalf("unexpected request: %q. Expecting %q", s, expectedS)
 	}
@@ -1197,7 +1253,7 @@ func TestSetResponseBodyStreamChunked(t *testing.T) {
 func testSetRequestBodyStream(t *testing.T, body string, chunked bool) {
 	var req Request
 	req.Header.SetHost("foobar.com")
-	req.Header.SetMethod("POST")
+	req.Header.SetMethod(MethodPost)
 
 	bodySize := len(body)
 	if chunked {
@@ -1300,6 +1356,23 @@ func TestRequestReadChunked(t *testing.T) {
 	verifyTrailer(t, rb, "trail")
 }
 
+// See: https://github.com/erikdubbelboer/fasthttp/issues/34
+func TestRequestChunkedWhitespace(t *testing.T) {
+	var req Request
+
+	s := "POST /foo HTTP/1.1\r\nHost: google.com\r\nTransfer-Encoding: chunked\r\nContent-Type: aa/bb\r\n\r\n3  \r\nabc\r\n0\r\n\r\n"
+	r := bytes.NewBufferString(s)
+	rb := bufio.NewReader(r)
+	err := req.Read(rb)
+	if err != nil {
+		t.Fatalf("Unexpected error when reading chunked request: %s", err)
+	}
+	expectedBody := "abc"
+	if string(req.Body()) != expectedBody {
+		t.Fatalf("Unexpected body %q. Expected %q", req.Body(), expectedBody)
+	}
+}
+
 func TestResponseReadWithoutBody(t *testing.T) {
 	var resp Response
 
@@ -1343,22 +1416,22 @@ func testResponseReadWithoutBody(t *testing.T, resp *Response, s string, skipBod
 
 func TestRequestSuccess(t *testing.T) {
 	// empty method, user-agent and body
-	testRequestSuccess(t, "", "/foo/bar", "google.com", "", "", "GET")
+	testRequestSuccess(t, "", "/foo/bar", "google.com", "", "", MethodGet)
 
 	// non-empty user-agent
-	testRequestSuccess(t, "GET", "/foo/bar", "google.com", "MSIE", "", "GET")
+	testRequestSuccess(t, MethodGet, "/foo/bar", "google.com", "MSIE", "", MethodGet)
 
 	// non-empty method
-	testRequestSuccess(t, "HEAD", "/aaa", "fobar", "", "", "HEAD")
+	testRequestSuccess(t, MethodHead, "/aaa", "fobar", "", "", MethodHead)
 
 	// POST method with body
-	testRequestSuccess(t, "POST", "/bbb", "aaa.com", "Chrome aaa", "post body", "POST")
+	testRequestSuccess(t, MethodPost, "/bbb", "aaa.com", "Chrome aaa", "post body", MethodPost)
 
 	// PUT method with body
-	testRequestSuccess(t, "PUT", "/aa/bb", "a.com", "ome aaa", "put body", "PUT")
+	testRequestSuccess(t, MethodPut, "/aa/bb", "a.com", "ome aaa", "put body", MethodPut)
 
 	// only host is set
-	testRequestSuccess(t, "", "", "gooble.com", "", "", "GET")
+	testRequestSuccess(t, "", "", "gooble.com", "", "", MethodGet)
 }
 
 func TestResponseSuccess(t *testing.T) {
@@ -1372,7 +1445,7 @@ func TestResponseSuccess(t *testing.T) {
 
 	// response with missing server
 	testResponseSuccess(t, 500, "aaa", "", "aaadfsd",
-		500, "aaa", string(defaultServerName))
+		500, "aaa", "")
 
 	// empty body
 	testResponseSuccess(t, 200, "bbb", "qwer", "",
@@ -1412,11 +1485,11 @@ func testResponseSuccess(t *testing.T, statusCode int, contentType, serverName, 
 	if resp1.Header.ContentLength() != len(body) {
 		t.Fatalf("Unexpected content-length: %d. Expected %d", resp1.Header.ContentLength(), len(body))
 	}
-	if string(resp1.Header.Peek("Content-Type")) != expectedContentType {
-		t.Fatalf("Unexpected content-type: %q. Expected %q", resp1.Header.Peek("Content-Type"), expectedContentType)
+	if string(resp1.Header.Peek(HeaderContentType)) != expectedContentType {
+		t.Fatalf("Unexpected content-type: %q. Expected %q", resp1.Header.Peek(HeaderContentType), expectedContentType)
 	}
-	if string(resp1.Header.Peek("Server")) != expectedServerName {
-		t.Fatalf("Unexpected server: %q. Expected %q", resp1.Header.Peek("Server"), expectedServerName)
+	if string(resp1.Header.Peek(HeaderServer)) != expectedServerName {
+		t.Fatalf("Unexpected server: %q. Expected %q", resp1.Header.Peek(HeaderServer), expectedServerName)
 	}
 	if !bytes.Equal(resp1.Body(), []byte(body)) {
 		t.Fatalf("Unexpected body: %q. Expected %q", resp1.Body(), body)
@@ -1428,7 +1501,7 @@ func TestRequestWriteError(t *testing.T) {
 	testRequestWriteError(t, "", "/foo/bar", "", "", "")
 
 	// get with body
-	testRequestWriteError(t, "GET", "/foo/bar", "aaa.com", "", "foobar")
+	testRequestWriteError(t, MethodGet, "/foo/bar", "aaa.com", "", "foobar")
 }
 
 func testRequestWriteError(t *testing.T, method, requestURI, host, userAgent, body string) {
@@ -1436,11 +1509,11 @@ func testRequestWriteError(t *testing.T, method, requestURI, host, userAgent, bo
 
 	req.Header.SetMethod(method)
 	req.Header.SetRequestURI(requestURI)
-	req.Header.Set("Host", host)
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set(HeaderHost, host)
+	req.Header.Set(HeaderUserAgent, userAgent)
 	req.SetBody([]byte(body))
 
-	w := &ByteBuffer{}
+	w := &bytebufferpool.ByteBuffer{}
 	bw := bufio.NewWriter(w)
 	err := req.Write(bw)
 	if err == nil {
@@ -1453,13 +1526,13 @@ func testRequestSuccess(t *testing.T, method, requestURI, host, userAgent, body,
 
 	req.Header.SetMethod(method)
 	req.Header.SetRequestURI(requestURI)
-	req.Header.Set("Host", host)
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set(HeaderHost, host)
+	req.Header.Set(HeaderUserAgent, userAgent)
 	req.SetBody([]byte(body))
 
 	contentType := "foobar"
-	if method == "POST" {
-		req.Header.Set("Content-Type", contentType)
+	if method == MethodPost {
+		req.Header.Set(HeaderContentType, contentType)
 	}
 
 	w := &bytes.Buffer{}
@@ -1486,21 +1559,18 @@ func testRequestSuccess(t *testing.T, method, requestURI, host, userAgent, body,
 	if string(req1.Header.RequestURI()) != requestURI {
 		t.Fatalf("Unexpected RequestURI: %q. Expected %q", req1.Header.RequestURI(), requestURI)
 	}
-	if string(req1.Header.Peek("Host")) != host {
-		t.Fatalf("Unexpected host: %q. Expected %q", req1.Header.Peek("Host"), host)
+	if string(req1.Header.Peek(HeaderHost)) != host {
+		t.Fatalf("Unexpected host: %q. Expected %q", req1.Header.Peek(HeaderHost), host)
 	}
-	if len(userAgent) == 0 {
-		userAgent = string(defaultUserAgent)
-	}
-	if string(req1.Header.Peek("User-Agent")) != userAgent {
-		t.Fatalf("Unexpected user-agent: %q. Expected %q", req1.Header.Peek("User-Agent"), userAgent)
+	if string(req1.Header.Peek(HeaderUserAgent)) != userAgent {
+		t.Fatalf("Unexpected user-agent: %q. Expected %q", req1.Header.Peek(HeaderUserAgent), userAgent)
 	}
 	if !bytes.Equal(req1.Body(), []byte(body)) {
 		t.Fatalf("Unexpected body: %q. Expected %q", req1.Body(), body)
 	}
 
-	if method == "POST" && string(req1.Header.Peek("Content-Type")) != contentType {
-		t.Fatalf("Unexpected content-type: %q. Expected %q", req1.Header.Peek("Content-Type"), contentType)
+	if method == MethodPost && string(req1.Header.Peek(HeaderContentType)) != contentType {
+		t.Fatalf("Unexpected content-type: %q. Expected %q", req1.Header.Peek(HeaderContentType), contentType)
 	}
 }
 
@@ -1659,7 +1729,7 @@ func TestRequestURI(t *testing.T) {
 	expectedHash := "1334dfds&=d"
 
 	var req Request
-	req.Header.Set("Host", host)
+	req.Header.Set(HeaderHost, host)
 	req.Header.SetRequestURI(requestURI)
 
 	uri := req.URI()
@@ -1791,4 +1861,193 @@ func createChunkedBody(body []byte) []byte {
 		chunkSize++
 	}
 	return append(b, []byte("0\r\n\r\n")...)
+}
+
+func TestWriteMultipartForm(t *testing.T) {
+	var w bytes.Buffer
+	s := strings.Replace(`--foo
+Content-Disposition: form-data; name="key"
+
+value
+--foo
+Content-Disposition: form-data; name="file"; filename="test.json"
+Content-Type: application/json
+
+{"foo": "bar"}
+--foo--
+`, "\n", "\r\n", -1)
+	mr := multipart.NewReader(strings.NewReader(s), "foo")
+	form, err := mr.ReadForm(1024)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	if err := WriteMultipartForm(&w, form, "foo"); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	if w.String() != s {
+		t.Fatalf("unexpected output %q", w.Bytes())
+	}
+}
+
+func TestResponseRawBodySet(t *testing.T) {
+	var resp Response
+
+	expectedS := "test"
+	body := []byte(expectedS)
+	resp.SetBodyRaw(body)
+
+	testBodyWriteTo(t, &resp, expectedS, true)
+}
+
+func TestResponseRawBodyReset(t *testing.T) {
+	var resp Response
+
+	body := []byte("test")
+	resp.SetBodyRaw(body)
+	resp.ResetBody()
+
+	testBodyWriteTo(t, &resp, "", true)
+}
+
+func TestResponseRawBodyCopyTo(t *testing.T) {
+	var resp Response
+
+	expectedS := "test"
+	body := []byte(expectedS)
+	resp.SetBodyRaw(body)
+
+	testResponseCopyTo(t, &resp)
+}
+
+type testReader struct {
+	read chan (int)
+	cb   chan (struct{})
+}
+
+func (r *testReader) Read(b []byte) (int, error) {
+	read := <-r.read
+
+	if read == -1 {
+		return 0, io.EOF
+	}
+
+	r.cb <- struct{}{}
+
+	for i := 0; i < read; i++ {
+		b[i] = 'x'
+	}
+
+	return read, nil
+}
+
+func TestResponseImmediateHeaderFlushRegressionFixedLength(t *testing.T) {
+	var r Response
+
+	expectedS := "aaabbbccc"
+	buf := bytes.NewBufferString(expectedS)
+	r.SetBodyStream(buf, len(expectedS))
+	r.ImmediateHeaderFlush = true
+
+	testBodyWriteTo(t, &r, expectedS, false)
+}
+
+func TestResponseImmediateHeaderFlushRegressionChunked(t *testing.T) {
+	var r Response
+
+	expectedS := "aaabbbccc"
+	buf := bytes.NewBufferString(expectedS)
+	r.SetBodyStream(buf, -1)
+	r.ImmediateHeaderFlush = true
+
+	testBodyWriteTo(t, &r, expectedS, false)
+}
+
+func TestResponseImmediateHeaderFlushFixedLength(t *testing.T) {
+	var r Response
+
+	r.ImmediateHeaderFlush = true
+
+	ch := make(chan int)
+	cb := make(chan struct{})
+
+	buf := &testReader{read: ch, cb: cb}
+
+	r.SetBodyStream(buf, 3)
+
+	b := []byte{}
+	w := bytes.NewBuffer(b)
+	bb := bufio.NewWriter(w)
+
+	bw := &r
+
+	waitForIt := make(chan struct{})
+
+	go func() {
+		if err := bw.Write(bb); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		waitForIt <- struct{}{}
+	}()
+
+	ch <- 3
+
+	if !strings.Contains(w.String(), "Content-Length: 3") {
+		t.Fatalf("Expected headers to be flushed")
+	}
+
+	if strings.Contains(w.String(), "xxx") {
+		t.Fatalf("Did not expext body to be written yet")
+	}
+
+	<-cb
+	ch <- -1
+
+	<-waitForIt
+}
+
+func TestResponseImmediateHeaderFlushChunked(t *testing.T) {
+	var r Response
+
+	r.ImmediateHeaderFlush = true
+
+	ch := make(chan int)
+	cb := make(chan struct{})
+
+	buf := &testReader{read: ch, cb: cb}
+
+	r.SetBodyStream(buf, -1)
+
+	b := []byte{}
+	w := bytes.NewBuffer(b)
+	bb := bufio.NewWriter(w)
+
+	bw := &r
+
+	waitForIt := make(chan struct{})
+
+	go func() {
+		if err := bw.Write(bb); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+
+		waitForIt <- struct{}{}
+	}()
+
+	ch <- 3
+
+	if !strings.Contains(w.String(), "Transfer-Encoding: chunked") {
+		t.Fatalf("Expected headers to be flushed")
+	}
+
+	if strings.Contains(w.String(), "xxx") {
+		t.Fatalf("Did not expext body to be written yet")
+	}
+
+	<-cb
+	ch <- -1
+
+	<-waitForIt
 }

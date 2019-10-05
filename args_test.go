@@ -1,11 +1,15 @@
 package fasthttp
 
 import (
+	"bytes"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/valyala/bytebufferpool"
 )
 
 func TestDecodeArgAppend(t *testing.T) {
@@ -35,22 +39,31 @@ func TestArgsAdd(t *testing.T) {
 	a.Add("foo", "baz")
 	a.Add("foo", "1")
 	a.Add("ba", "23")
-	if a.Len() != 4 {
-		t.Fatalf("unexpected number of elements: %d. Expecting 4", a.Len())
+	a.Add("foo", "")
+	a.AddNoValue("foo")
+	if a.Len() != 6 {
+		t.Fatalf("unexpected number of elements: %d. Expecting 6", a.Len())
 	}
 	s := a.String()
-	expectedS := "foo=bar&foo=baz&foo=1&ba=23"
+	expectedS := "foo=bar&foo=baz&foo=1&ba=23&foo=&foo"
 	if s != expectedS {
 		t.Fatalf("unexpected result: %q. Expecting %q", s, expectedS)
 	}
 
-	var a1 Args
-	a1.Parse(s)
-	if a1.Len() != 4 {
-		t.Fatalf("unexpected number of elements: %d. Expecting 4", a.Len())
+	a.Sort(bytes.Compare)
+	ss := a.String()
+	expectedSS := "ba=23&foo=&foo&foo=1&foo=bar&foo=baz"
+	if ss != expectedSS {
+		t.Fatalf("unexpected result: %q. Expecting %q", ss, expectedSS)
 	}
 
-	var barFound, bazFound, oneFound, baFound bool
+	var a1 Args
+	a1.Parse(s)
+	if a1.Len() != 6 {
+		t.Fatalf("unexpected number of elements: %d. Expecting 6", a.Len())
+	}
+
+	var barFound, bazFound, oneFound, emptyFound1, emptyFound2, baFound bool
 	a1.VisitAll(func(k, v []byte) {
 		switch string(k) {
 		case "foo":
@@ -61,6 +74,12 @@ func TestArgsAdd(t *testing.T) {
 				bazFound = true
 			case "1":
 				oneFound = true
+			case "":
+				if emptyFound1 {
+					emptyFound2 = true
+				} else {
+					emptyFound1 = true
+				}
 			default:
 				t.Fatalf("unexpected value %q", v)
 			}
@@ -73,8 +92,8 @@ func TestArgsAdd(t *testing.T) {
 			t.Fatalf("unexpected key found %q", k)
 		}
 	})
-	if !barFound || !bazFound || !oneFound || !baFound {
-		t.Fatalf("something is missing: %v, %v, %v, %v", barFound, bazFound, oneFound, baFound)
+	if !barFound || !bazFound || !oneFound || !emptyFound1 || !emptyFound2 || !baFound {
+		t.Fatalf("something is missing: %v, %v, %v, %v, %v, %v", barFound, bazFound, oneFound, emptyFound1, emptyFound2, baFound)
 	}
 }
 
@@ -152,8 +171,16 @@ func TestArgsPeekMulti(t *testing.T) {
 
 func TestArgsEscape(t *testing.T) {
 	testArgsEscape(t, "foo", "bar", "foo=bar")
-	testArgsEscape(t, "f.o,1:2/4", "~`!@#$%^&*()_-=+\\|/[]{};:'\"<>,./?",
-		"f.o%2C1%3A2%2F4=%7E%60%21%40%23%24%25%5E%26*%28%29_-%3D%2B%5C%7C%2F%5B%5D%7B%7D%3B%3A%27%22%3C%3E%2C.%2F%3F")
+
+	// Test all characters
+	k := "f.o,1:2/4"
+	var v = make([]byte, 256)
+	for i := 0; i < 256; i++ {
+		v[i] = byte(i)
+	}
+	u := url.Values{}
+	u.Add(k, string(v))
+	testArgsEscape(t, k, string(v), u.Encode())
 }
 
 func testArgsEscape(t *testing.T, k, v, expectedS string) {
@@ -165,13 +192,37 @@ func testArgsEscape(t *testing.T, k, v, expectedS string) {
 	}
 }
 
+func TestPathEscape(t *testing.T) {
+	testPathEscape(t, "/foo/bar")
+	testPathEscape(t, "")
+	testPathEscape(t, "/")
+	testPathEscape(t, "//")
+	testPathEscape(t, "*") // See https://github.com/golang/go/issues/11202
+
+	// Test all characters
+	var pathSegment = make([]byte, 256)
+	for i := 0; i < 256; i++ {
+		pathSegment[i] = byte(i)
+	}
+	testPathEscape(t, "/foo/"+string(pathSegment))
+}
+
+func testPathEscape(t *testing.T, s string) {
+	u := url.URL{Path: s}
+	expectedS := u.EscapedPath()
+	res := string(appendQuotedPath(nil, []byte(s)))
+	if res != expectedS {
+		t.Fatalf("unexpected args %q. Expecting %q.", res, expectedS)
+	}
+}
+
 func TestArgsWriteTo(t *testing.T) {
 	s := "foo=bar&baz=123&aaa=bbb"
 
 	var a Args
 	a.Parse(s)
 
-	var w ByteBuffer
+	var w bytebufferpool.ByteBuffer
 	n, err := a.WriteTo(&w)
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
@@ -251,6 +302,7 @@ func TestArgsCopyTo(t *testing.T) {
 	testCopyTo(t, &a)
 
 	a.Set("xxx", "yyy")
+	a.AddNoValue("ba")
 	testCopyTo(t, &a)
 
 	a.Del("foo")
@@ -265,6 +317,10 @@ func testCopyTo(t *testing.T, a *Args) {
 
 	var b Args
 	a.CopyTo(&b)
+
+	if !reflect.DeepEqual(*a, b) {
+		t.Fatalf("ArgsCopyTo fail, a: \n%+v\nb: \n%+v\n", *a, b)
+	}
 
 	b.VisitAll(func(k, v []byte) {
 		if _, ok := keys[string(k)]; !ok {
@@ -301,10 +357,12 @@ func TestArgsStringCompose(t *testing.T) {
 	a.Set("foo", "bar")
 	a.Set("aa", "bbb")
 	a.Set("привет", "мир")
+	a.SetNoValue("bb")
 	a.Set("", "xxxx")
 	a.Set("cvx", "")
+	a.SetNoValue("novalue")
 
-	expectedS := "foo=bar&aa=bbb&%D0%BF%D1%80%D0%B8%D0%B2%D0%B5%D1%82=%D0%BC%D0%B8%D1%80&=xxxx&cvx"
+	expectedS := "foo=bar&aa=bbb&%D0%BF%D1%80%D0%B8%D0%B2%D0%B5%D1%82=%D0%BC%D0%B8%D1%80&bb&=xxxx&cvx=&novalue"
 	s := a.String()
 	if s != expectedS {
 		t.Fatalf("Unexpected string %q. Exected %q", s, expectedS)
@@ -319,7 +377,7 @@ func TestArgsString(t *testing.T) {
 	testArgsString(t, &a, "foo=bar")
 	testArgsString(t, &a, "foo=bar&baz=sss")
 	testArgsString(t, &a, "")
-	testArgsString(t, &a, "f%20o=x.x*-_8x%D0%BF%D1%80%D0%B8%D0%B2%D0%B5aaa&sdf=ss")
+	testArgsString(t, &a, "f+o=x.x%2A-_8x%D0%BF%D1%80%D0%B8%D0%B2%D0%B5aaa&sdf=ss")
 	testArgsString(t, &a, "=asdfsdf")
 }
 

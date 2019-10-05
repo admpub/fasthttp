@@ -48,8 +48,20 @@ type URI struct {
 	queryArgs       Args
 	parsedQueryArgs bool
 
+	// Path values are sent as-is without normalization
+	//
+	// Disabled path normalization may be useful for proxying incoming requests
+	// to servers that are expecting paths to be forwarded as-is.
+	//
+	// By default path values are normalized, i.e.
+	// extra slashes are removed, special characters are encoded.
+	DisablePathNormalizing bool
+
 	fullURI    []byte
 	requestURI []byte
+
+	username []byte
+	password []byte
 
 	h *RequestHeader
 }
@@ -63,9 +75,12 @@ func (u *URI) CopyTo(dst *URI) {
 	dst.queryString = append(dst.queryString[:0], u.queryString...)
 	dst.hash = append(dst.hash[:0], u.hash...)
 	dst.host = append(dst.host[:0], u.host...)
+	dst.username = append(dst.username[:0], u.username...)
+	dst.password = append(dst.password[:0], u.password...)
 
 	u.queryArgs.CopyTo(&dst.queryArgs)
 	dst.parsedQueryArgs = u.parsedQueryArgs
+	dst.DisablePathNormalizing = u.DisablePathNormalizing
 
 	// fullURI and requestURI shouldn't be copied, since they are created
 	// from scratch on each FullURI() and RequestURI() call.
@@ -87,6 +102,36 @@ func (u *URI) SetHash(hash string) {
 // SetHashBytes sets URI hash.
 func (u *URI) SetHashBytes(hash []byte) {
 	u.hash = append(u.hash[:0], hash...)
+}
+
+// Username returns URI username
+func (u *URI) Username() []byte {
+	return u.username
+}
+
+// SetUsername sets URI username.
+func (u *URI) SetUsername(username string) {
+	u.username = append(u.username[:0], username...)
+}
+
+// SetUsernameBytes sets URI username.
+func (u *URI) SetUsernameBytes(username []byte) {
+	u.username = append(u.username[:0], username...)
+}
+
+// Password returns URI password
+func (u *URI) Password() []byte {
+	return u.password
+}
+
+// SetPassword sets URI password.
+func (u *URI) SetPassword(password string) {
+	u.password = append(u.password[:0], password...)
+}
+
+// SetPasswordBytes sets URI password.
+func (u *URI) SetPasswordBytes(password []byte) {
+	u.password = append(u.password[:0], password...)
 }
 
 // QueryString returns URI query string,
@@ -174,13 +219,16 @@ func (u *URI) Reset() {
 	u.path = u.path[:0]
 	u.queryString = u.queryString[:0]
 	u.hash = u.hash[:0]
+	u.username = u.username[:0]
+	u.password = u.password[:0]
 
 	u.host = u.host[:0]
 	u.queryArgs.Reset()
 	u.parsedQueryArgs = false
+	u.DisablePathNormalizing = false
 
 	// There is no need in u.fullURI = u.fullURI[:0], since full uri
-	// is calucalted on each call to FullURI().
+	// is calculated on each call to FullURI().
 
 	// There is no need in u.requestURI = u.requestURI[:0], since requestURI
 	// is calculated on each call to RequestURI().
@@ -236,6 +284,20 @@ func (u *URI) parse(host, uri []byte, h *RequestHeader) {
 	scheme, host, uri := splitHostURI(host, uri)
 	u.scheme = append(u.scheme, scheme...)
 	lowercaseBytes(u.scheme)
+
+	if n := bytes.Index(host, strAt); n >= 0 {
+		auth := host[:n]
+		host = host[n+1:]
+
+		if n := bytes.Index(auth, strColon); n >= 0 {
+			u.username = auth[:n]
+			u.password = auth[n+1:]
+		} else {
+			u.username = auth
+			u.password = auth[:0] // Make sure it's not nil
+		}
+	}
+
 	u.host = append(u.host, host...)
 	lowercaseBytes(u.host)
 
@@ -336,7 +398,12 @@ func normalizePath(dst, src []byte) []byte {
 
 // RequestURI returns RequestURI - i.e. URI without Scheme and Host.
 func (u *URI) RequestURI() []byte {
-	dst := appendQuotedPath(u.requestURI[:0], u.Path())
+	var dst []byte
+	if u.DisablePathNormalizing {
+		dst = append(u.requestURI[:0], u.PathOriginal()...)
+	} else {
+		dst = appendQuotedPath(u.requestURI[:0], u.Path())
+	}
 	if u.queryArgs.Len() > 0 {
 		dst = append(dst, '?')
 		dst = u.queryArgs.AppendBytes(dst)

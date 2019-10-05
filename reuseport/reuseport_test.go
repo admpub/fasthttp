@@ -1,3 +1,5 @@
+// +build !windows
+
 package reuseport
 
 import (
@@ -73,7 +75,7 @@ func testNewListener(t *testing.T, network, addr string, serversCount, requestsC
 		select {
 		case <-ch:
 		case <-time.After(200 * time.Millisecond):
-			t.Fatalf("%d. timeout when waiting for response: %s", i, err)
+			t.Fatalf("%d. timeout when waiting for response", i)
 		}
 
 		if string(resp) != req {

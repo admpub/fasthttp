@@ -9,6 +9,8 @@ import (
 )
 
 func TestURICopyToQueryArgs(t *testing.T) {
+	t.Parallel()
+
 	var u URI
 	a := u.QueryArgs()
 	a.Set("foo", "bar")
@@ -23,10 +25,14 @@ func TestURICopyToQueryArgs(t *testing.T) {
 }
 
 func TestURIAcquireReleaseSequential(t *testing.T) {
+	t.Parallel()
+
 	testURIAcquireRelease(t)
 }
 
 func TestURIAcquireReleaseConcurrent(t *testing.T) {
+	t.Parallel()
+
 	ch := make(chan struct{}, 10)
 	for i := 0; i < 10; i++ {
 		go func() {
@@ -62,6 +68,8 @@ func testURIAcquireRelease(t *testing.T) {
 }
 
 func TestURILastPathSegment(t *testing.T) {
+	t.Parallel()
+
 	testURILastPathSegment(t, "", "")
 	testURILastPathSegment(t, "/", "")
 	testURILastPathSegment(t, "/foo/bar/", "")
@@ -79,6 +87,8 @@ func testURILastPathSegment(t *testing.T, path, expectedSegment string) {
 }
 
 func TestURIPathEscape(t *testing.T) {
+	t.Parallel()
+
 	testURIPathEscape(t, "/foo/bar", "/foo/bar")
 	testURIPathEscape(t, "/f_o-o=b:ar,b.c&q", "/f_o-o=b:ar,b.c&q")
 	testURIPathEscape(t, "/aa?bb.тест~qq", "/aa%3Fbb.%D1%82%D0%B5%D1%81%D1%82~qq")
@@ -94,6 +104,8 @@ func testURIPathEscape(t *testing.T, path, expectedRequestURI string) {
 }
 
 func TestURIUpdate(t *testing.T) {
+	t.Parallel()
+
 	// full uri
 	testURIUpdate(t, "http://foo.bar/baz?aaa=22#aaa", "https://aa.com/bb", "https://aa.com/bb")
 
@@ -185,6 +197,8 @@ func testURIPathNormalize(t *testing.T, u *URI, requestURI, expectedPath string)
 }
 
 func TestURINoNormalization(t *testing.T) {
+	t.Parallel()
+
 	var u URI
 	irregularPath := "/aaa%2Fbbb%2F%2E.%2Fxxx"
 	u.Parse(nil, []byte(irregularPath))
@@ -195,22 +209,26 @@ func TestURINoNormalization(t *testing.T) {
 }
 
 func TestURICopyTo(t *testing.T) {
+	t.Parallel()
+
 	var u URI
 	var copyU URI
 	u.CopyTo(&copyU)
-	if !reflect.DeepEqual(u, copyU) {
-		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU)
+	if !reflect.DeepEqual(u, copyU) { //nolint:govet
+		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU) //nolint:govet
 	}
 
 	u.UpdateBytes([]byte("https://google.com/foo?bar=baz&baraz#qqqq"))
 	u.CopyTo(&copyU)
-	if !reflect.DeepEqual(u, copyU) {
-		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU)
+	if !reflect.DeepEqual(u, copyU) { //nolint:govet
+		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU) //nolint:govet
 	}
 
 }
 
 func TestURIFullURI(t *testing.T) {
+	t.Parallel()
+
 	var args Args
 
 	// empty scheme, path and hash
@@ -256,18 +274,18 @@ func testURIFullURI(t *testing.T, scheme, host, path, hash string, args *Args, e
 }
 
 func TestURIParseNilHost(t *testing.T) {
-	testURIParseScheme(t, "http://google.com/foo?bar#baz", "http", "google.com", "/foo?bar#baz")
-	testURIParseScheme(t, "HTtP://google.com/", "http", "google.com", "/")
-	testURIParseScheme(t, "://google.com/xyz", "http", "google.com", "/xyz")
-	testURIParseScheme(t, "//google.com/foobar", "http", "google.com", "/foobar")
-	testURIParseScheme(t, "fTP://aaa.com", "ftp", "aaa.com", "/")
-	testURIParseScheme(t, "httPS://aaa.com", "https", "aaa.com", "/")
+	testURIParseScheme(t, "http://google.com/foo?bar#baz", "http", "google.com", "/foo?bar", "baz")
+	testURIParseScheme(t, "HTtP://google.com/", "http", "google.com", "/", "")
+	testURIParseScheme(t, "://google.com/xyz", "http", "google.com", "/xyz", "")
+	testURIParseScheme(t, "//google.com/foobar", "http", "google.com", "/foobar", "")
+	testURIParseScheme(t, "fTP://aaa.com", "ftp", "aaa.com", "/", "")
+	testURIParseScheme(t, "httPS://aaa.com", "https", "aaa.com", "/", "")
 
 	// missing slash after hostname
-	testURIParseScheme(t, "http://foobar.com?baz=111", "http", "foobar.com", "/?baz=111")
+	testURIParseScheme(t, "http://foobar.com?baz=111", "http", "foobar.com", "/?baz=111", "")
 }
 
-func testURIParseScheme(t *testing.T, uri, expectedScheme, expectedHost, expectedRequestURI string) {
+func testURIParseScheme(t *testing.T, uri, expectedScheme, expectedHost, expectedRequestURI, expectedHash string) {
 	var u URI
 	u.Parse(nil, []byte(uri))
 	if string(u.Scheme()) != expectedScheme {
@@ -279,9 +297,14 @@ func testURIParseScheme(t *testing.T, uri, expectedScheme, expectedHost, expecte
 	if string(u.RequestURI()) != expectedRequestURI {
 		t.Fatalf("Unexepcted requestURI %q. Expecting %q for uri %q", u.RequestURI(), expectedRequestURI, uri)
 	}
+	if string(u.hash) != expectedHash {
+		t.Fatalf("Unexepcted hash %q. Expecting %q for uri %q", u.hash, expectedHash, uri)
+	}
 }
 
 func TestURIParse(t *testing.T) {
+	t.Parallel()
+
 	var u URI
 
 	// no args
@@ -325,6 +348,15 @@ func TestURIParse(t *testing.T) {
 	// http:// in query params
 	testURIParse(t, &u, "aaa.com", "/foo?bar=http://google.com",
 		"http://aaa.com/foo?bar=http://google.com", "aaa.com", "/foo", "/foo", "bar=http://google.com", "")
+
+	testURIParse(t, &u, "aaa.com", "//relative",
+		"http://aaa.com/relative", "aaa.com", "/relative", "//relative", "", "")
+
+	testURIParse(t, &u, "", "//aaa.com//absolute",
+		"http://aaa.com/absolute", "aaa.com", "/absolute", "//absolute", "", "")
+
+	testURIParse(t, &u, "", "//aaa.com\r\n\r\nGET x",
+		"http:///", "", "/", "", "", "")
 }
 
 func testURIParse(t *testing.T, u *URI, host, uri,

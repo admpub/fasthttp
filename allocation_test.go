@@ -9,6 +9,8 @@ import (
 )
 
 func TestAllocationServeConn(t *testing.T) {
+	t.Parallel()
+
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
 		},
@@ -46,7 +48,7 @@ func TestAllocationClient(t *testing.T) {
 		Handler: func(ctx *RequestCtx) {
 		},
 	}
-	go s.Serve(ln)
+	go s.Serve(ln) //nolint:errcheck
 
 	c := &Client{}
 	url := "http://test:test@" + ln.Addr().String() + "/foo?bar=baz"
@@ -70,6 +72,8 @@ func TestAllocationClient(t *testing.T) {
 }
 
 func TestAllocationURI(t *testing.T) {
+	t.Parallel()
+
 	uri := []byte("http://username:password@example.com/some/path?foo=bar#test")
 
 	n := testing.AllocsPerRun(100, func() {

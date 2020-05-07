@@ -36,7 +36,7 @@ var uriPool = &sync.Pool{
 //
 // URI instance MUST NOT be used from concurrently running goroutines.
 type URI struct {
-	noCopy noCopy
+	noCopy noCopy //nolint:unused,structcheck
 
 	pathOriginal []byte
 	scheme       []byte
@@ -62,8 +62,6 @@ type URI struct {
 
 	username []byte
 	password []byte
-
-	h *RequestHeader
 }
 
 // CopyTo copies uri contents to dst.
@@ -84,7 +82,6 @@ func (u *URI) CopyTo(dst *URI) {
 
 	// fullURI and requestURI shouldn't be copied, since they are created
 	// from scratch on each FullURI() and RequestURI() call.
-	dst.h = u.h
 }
 
 // Hash returns URI hash, i.e. qwe of http://aaa.com/foo/bar?baz=123#qwe .
@@ -232,19 +229,12 @@ func (u *URI) Reset() {
 
 	// There is no need in u.requestURI = u.requestURI[:0], since requestURI
 	// is calculated on each call to RequestURI().
-
-	u.h = nil
 }
 
 // Host returns host part, i.e. aaa.com of http://aaa.com/foo/bar?baz=123#qwe .
 //
 // Host is always lowercased.
 func (u *URI) Host() []byte {
-	if len(u.host) == 0 && u.h != nil {
-		u.host = append(u.host[:0], u.h.Host()...)
-		lowercaseBytes(u.host)
-		u.h = nil
-	}
 	return u.host
 }
 
@@ -267,23 +257,27 @@ func (u *URI) SetHostBytes(host []byte) {
 //
 // uri may contain e.g. RequestURI without scheme and host if host is non-empty.
 func (u *URI) Parse(host, uri []byte) {
-	u.parse(host, uri, nil)
+	u.parse(host, uri, false)
 }
 
-func (u *URI) parseQuick(uri []byte, h *RequestHeader, isTLS bool) {
-	u.parse(nil, uri, h)
+func (u *URI) parse(host, uri []byte, isTLS bool) {
+	u.Reset()
+
+	if stringContainsCTLByte(uri) {
+		return
+	}
+
+	if len(host) == 0 || bytes.Contains(uri, strColonSlashSlash) {
+		scheme, newHost, newURI := splitHostURI(host, uri)
+		u.scheme = append(u.scheme, scheme...)
+		lowercaseBytes(u.scheme)
+		host = newHost
+		uri = newURI
+	}
+
 	if isTLS {
 		u.scheme = append(u.scheme[:0], strHTTPS...)
 	}
-}
-
-func (u *URI) parse(host, uri []byte, h *RequestHeader) {
-	u.Reset()
-	u.h = h
-
-	scheme, host, uri := splitHostURI(host, uri)
-	u.scheme = append(u.scheme, scheme...)
-	lowercaseBytes(u.scheme)
 
 	if n := bytes.Index(host, strAt); n >= 0 {
 		auth := host[:n]
@@ -411,10 +405,6 @@ func (u *URI) RequestURI() []byte {
 		dst = append(dst, '?')
 		dst = append(dst, u.queryString...)
 	}
-	if len(u.hash) > 0 {
-		dst = append(dst, '#')
-		dst = append(dst, u.hash...)
-	}
 	u.requestURI = dst
 	return u.requestURI
 }
@@ -529,7 +519,12 @@ func (u *URI) FullURI() []byte {
 // AppendBytes appends full uri to dst and returns the extended dst.
 func (u *URI) AppendBytes(dst []byte) []byte {
 	dst = u.appendSchemeHost(dst)
-	return append(dst, u.RequestURI()...)
+	dst = append(dst, u.RequestURI()...)
+	if len(u.hash) > 0 {
+		dst = append(dst, '#')
+		dst = append(dst, u.hash...)
+	}
+	return dst
 }
 
 func (u *URI) appendSchemeHost(dst []byte) []byte {
@@ -589,4 +584,15 @@ func (u *URI) parseQueryArgs() {
 	}
 	u.queryArgs.ParseBytes(u.queryString)
 	u.parsedQueryArgs = true
+}
+
+// stringContainsCTLByte reports whether s contains any ASCII control character.
+func stringContainsCTLByte(s []byte) bool {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b < ' ' || b == 0x7f {
+			return true
+		}
+	}
+	return false
 }

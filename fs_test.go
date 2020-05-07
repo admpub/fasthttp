@@ -23,6 +23,8 @@ func (t TestLogger) Printf(format string, args ...interface{}) {
 }
 
 func TestNewVHostPathRewriter(t *testing.T) {
+	t.Parallel()
+
 	var ctx RequestCtx
 	var req Request
 	req.Header.SetHost("foobar.com")
@@ -83,22 +85,28 @@ func testPathNotFound(t *testing.T, pathNotFoundFunc RequestHandler) {
 		// Equals to ...
 		if bytes.Equal(ctx.Response.Body(),
 			[]byte("Cannot open requested path")) {
-			t.Fatalf("respones defers. Response: %q", ctx.Response.Body())
+			t.Fatalf("response defers. Response: %q", ctx.Response.Body())
 		}
 	}
 }
 
 func TestPathNotFound(t *testing.T) {
+	t.Parallel()
+
 	testPathNotFound(t, nil)
 }
 
 func TestPathNotFoundFunc(t *testing.T) {
+	t.Parallel()
+
 	testPathNotFound(t, func(ctx *RequestCtx) {
-		ctx.WriteString("Not found hehe")
+		ctx.WriteString("Not found hehe") //nolint:errcheck
 	})
 }
 
 func TestServeFileHead(t *testing.T) {
+	t.Parallel()
+
 	var ctx RequestCtx
 	var req Request
 	req.Header.SetMethod(MethodHead)
@@ -136,6 +144,8 @@ func TestServeFileHead(t *testing.T) {
 }
 
 func TestServeFileSmallNoReadFrom(t *testing.T) {
+	t.Parallel()
+
 	teststr := "hello, world!"
 
 	tempdir, err := ioutil.TempDir("", "httpexpect")
@@ -187,6 +197,8 @@ func (pw pureWriter) Write(p []byte) (nn int, err error) {
 }
 
 func TestServeFileCompressed(t *testing.T) {
+	t.Parallel()
+
 	var ctx RequestCtx
 	var req Request
 	req.SetRequestURI("http://foobar.com/baz")
@@ -221,6 +233,8 @@ func TestServeFileCompressed(t *testing.T) {
 }
 
 func TestServeFileUncompressed(t *testing.T) {
+	t.Parallel()
+
 	var ctx RequestCtx
 	var req Request
 	req.SetRequestURI("http://foobar.com/baz")
@@ -252,6 +266,8 @@ func TestServeFileUncompressed(t *testing.T) {
 }
 
 func TestFSByteRangeConcurrent(t *testing.T) {
+	t.Parallel()
+
 	fs := &FS{
 		Root:            ".",
 		AcceptByteRange: true,
@@ -280,6 +296,8 @@ func TestFSByteRangeConcurrent(t *testing.T) {
 }
 
 func TestFSByteRangeSingleThread(t *testing.T) {
+	t.Parallel()
+
 	fs := &FS{
 		Root:            ".",
 		AcceptByteRange: true,
@@ -350,6 +368,8 @@ func getFileContents(path string) ([]byte, error) {
 }
 
 func TestParseByteRangeSuccess(t *testing.T) {
+	t.Parallel()
+
 	testParseByteRangeSuccess(t, "bytes=0-0", 1, 0, 0)
 	testParseByteRangeSuccess(t, "bytes=1234-6789", 6790, 1234, 6789)
 
@@ -381,6 +401,8 @@ func testParseByteRangeSuccess(t *testing.T, v string, contentLength, startPos, 
 }
 
 func TestParseByteRangeError(t *testing.T) {
+	t.Parallel()
+
 	// invalid value
 	testParseByteRangeError(t, "asdfasdfas", 1234)
 
@@ -413,6 +435,8 @@ func testParseByteRangeError(t *testing.T, v string, contentLength int) {
 }
 
 func TestFSCompressConcurrent(t *testing.T) {
+	// This test can't run parallel as files in / might by changed by other tests.
+
 	fs := &FS{
 		Root:               ".",
 		GenerateIndexPages: true,
@@ -443,6 +467,8 @@ func TestFSCompressConcurrent(t *testing.T) {
 }
 
 func TestFSCompressSingleThread(t *testing.T) {
+	// This test can't run parallel as files in / might by changed by other tests.
+
 	fs := &FS{
 		Root:               ".",
 		GenerateIndexPages: true,
@@ -501,23 +527,25 @@ func testFSCompress(t *testing.T, h RequestHandler, filePath string) {
 		t.Fatalf("unexpected error when gunzipping response body: %s. filePath=%q", err, filePath)
 	}
 	if string(zbody) != body {
-		t.Fatalf("unexpected body %q. Expected %q. FilePath=%q", zbody, body, filePath)
+		t.Fatalf("unexpected body len=%d. Expected len=%d. FilePath=%q", len(zbody), len(body), filePath)
 	}
 }
 
 func TestFileLock(t *testing.T) {
+	t.Parallel()
+
 	for i := 0; i < 10; i++ {
 		filePath := fmt.Sprintf("foo/bar/%d.jpg", i)
 		lock := getFileLock(filePath)
 		lock.Lock()
-		lock.Unlock()
+		lock.Unlock() // nolint:staticcheck
 	}
 
 	for i := 0; i < 10; i++ {
 		filePath := fmt.Sprintf("foo/bar/%d.jpg", i)
 		lock := getFileLock(filePath)
 		lock.Lock()
-		lock.Unlock()
+		lock.Unlock() // nolint:staticcheck
 	}
 }
 
@@ -636,6 +664,8 @@ func fsHandlerTest(t *testing.T, requestHandler RequestHandler, filenames []stri
 }
 
 func TestStripPathSlashes(t *testing.T) {
+	t.Parallel()
+
 	testStripPathSlashes(t, "", 0, "")
 	testStripPathSlashes(t, "", 10, "")
 	testStripPathSlashes(t, "/", 0, "")
@@ -663,6 +693,8 @@ func testStripPathSlashes(t *testing.T, path string, stripSlashes int, expectedP
 }
 
 func TestFileExtension(t *testing.T) {
+	t.Parallel()
+
 	testFileExtension(t, "foo.bar", false, "zzz", ".bar")
 	testFileExtension(t, "foobar", false, "zzz", "")
 	testFileExtension(t, "foo.bar.baz", false, "zzz", ".baz")
@@ -684,6 +716,8 @@ func testFileExtension(t *testing.T, path string, compressed bool, compressedFil
 }
 
 func TestServeFileContentType(t *testing.T) {
+	t.Parallel()
+
 	var ctx RequestCtx
 	var req Request
 	req.Header.SetMethod(MethodGet)

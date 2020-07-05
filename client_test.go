@@ -20,6 +20,60 @@ import (
 	"github.com/admpub/fasthttp/fasthttputil"
 )
 
+func TestPipelineClientIssue832(t *testing.T) {
+	t.Parallel()
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	req := AcquireRequest()
+	defer ReleaseRequest(req)
+	req.SetHost("example.com")
+
+	res := AcquireResponse()
+	defer ReleaseResponse(res)
+
+	client := PipelineClient{
+		Dial: func(addr string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		ReadTimeout: time.Millisecond * 10,
+		Logger:      &testLogger{}, // Ignore log output.
+	}
+
+	attempts := 10
+	go func() {
+		for i := 0; i < attempts; i++ {
+			c, err := ln.Accept()
+			if err != nil {
+				t.Error(err)
+			}
+			if c != nil {
+				go func() {
+					time.Sleep(time.Millisecond * 50)
+					c.Close()
+				}()
+			}
+		}
+	}()
+
+	done := make(chan int)
+	go func() {
+		defer close(done)
+
+		for i := 0; i < attempts; i++ {
+			if err := client.Do(req, res); err == nil {
+				t.Error("error expected")
+			}
+		}
+	}()
+
+	select {
+	case <-time.After(time.Second):
+		t.Fatal("PipelineClient did not restart worker")
+	case <-done:
+	}
+}
+
 func TestClientInvalidURI(t *testing.T) {
 	t.Parallel()
 
@@ -112,7 +166,7 @@ func TestClientURLAuth(t *testing.T) {
 	for up, expected := range cases {
 		req := AcquireRequest()
 		req.Header.SetMethod(MethodGet)
-		req.SetRequestURI("http://" + up + "example.com")
+		req.SetRequestURI("http://" + up + "example.com/foo/bar")
 		if err := c.Do(req, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -245,7 +299,7 @@ func TestClientRedirectSameSchema(t *testing.T) {
 
 	urlParsed, err := url.Parse(destURL)
 	if err != nil {
-		fmt.Println(err)
+		t.Fatal(err)
 		return
 	}
 
@@ -270,7 +324,42 @@ func TestClientRedirectSameSchema(t *testing.T) {
 
 }
 
-func TestClientRedirectChangingSchemaHttp2Https(t *testing.T) {
+func TestClientRedirectClientChangingSchemaHttp2Https(t *testing.T) {
+	t.Parallel()
+
+	listenHTTPS := testClientRedirectListener(t, true)
+	defer listenHTTPS.Close()
+
+	listenHTTP := testClientRedirectListener(t, false)
+	defer listenHTTP.Close()
+
+	sHTTPS := testClientRedirectChangingSchemaServer(t, listenHTTPS, listenHTTP, true)
+	defer sHTTPS.Stop()
+
+	sHTTP := testClientRedirectChangingSchemaServer(t, listenHTTPS, listenHTTP, false)
+	defer sHTTP.Stop()
+
+	destURL := fmt.Sprintf("http://%s/baz", listenHTTP.Addr().String())
+
+	reqClient := &Client{
+		TLSConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+
+	statusCode, _, err := reqClient.GetTimeout(nil, destURL, 4000*time.Millisecond)
+	if err != nil {
+		t.Fatalf("HostClient error: %s", err)
+		return
+	}
+
+	if statusCode != 200 {
+		t.Fatalf("HostClient error code response %d", statusCode)
+		return
+	}
+}
+
+func TestClientRedirectHostClientChangingSchemaHttp2Https(t *testing.T) {
 	t.Parallel()
 
 	listenHTTPS := testClientRedirectListener(t, true)
@@ -289,7 +378,7 @@ func TestClientRedirectChangingSchemaHttp2Https(t *testing.T) {
 
 	urlParsed, err := url.Parse(destURL)
 	if err != nil {
-		fmt.Println(err)
+		t.Fatal(err)
 		return
 	}
 
@@ -300,15 +389,9 @@ func TestClientRedirectChangingSchemaHttp2Https(t *testing.T) {
 		},
 	}
 
-	statusCode, _, err := reqClient.GetTimeout(nil, destURL, 4000*time.Millisecond)
-	if err != nil {
-		t.Fatalf("HostClient error: %s", err)
-		return
-	}
-
-	if statusCode != 200 {
-		t.Fatalf("HostClient error code response %d", statusCode)
-		return
+	_, _, err = reqClient.GetTimeout(nil, destURL, 4000*time.Millisecond)
+	if err != ErrHostClientRedirectToDifferentScheme {
+		t.Fatal("expected HostClient error")
 	}
 }
 
@@ -1619,6 +1702,58 @@ func TestClientIdempotentRequest(t *testing.T) {
 	}
 }
 
+func TestClientRetryRequestWithCustomDecider(t *testing.T) {
+	t.Parallel()
+
+	dialsCount := 0
+	c := &Client{
+		Dial: func(addr string) (net.Conn, error) {
+			dialsCount++
+			switch dialsCount {
+			case 1:
+				return &singleReadConn{
+					s: "invalid response",
+				}, nil
+			case 2:
+				return &writeErrorConn{}, nil
+			case 3:
+				return &readErrorConn{}, nil
+			case 4:
+				return &singleReadConn{
+					s: "HTTP/1.1 345 OK\r\nContent-Type: foobar\r\nContent-Length: 7\r\n\r\n0123456",
+				}, nil
+			default:
+				t.Fatalf("unexpected number of dials: %d", dialsCount)
+			}
+			panic("unreachable")
+		},
+		RetryIf: func(req *Request) bool {
+			return req.URI().String() == "http://foobar/a/b"
+		},
+	}
+
+	var args Args
+
+	// Post must succeed for http://foobar/a/b uri.
+	statusCode, body, err := c.Post(nil, "http://foobar/a/b", &args)
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if statusCode != 345 {
+		t.Fatalf("unexpected status code: %d. Expecting 345", statusCode)
+	}
+	if string(body) != "0123456" {
+		t.Fatalf("unexpected body: %q. Expecting %q", body, "0123456")
+	}
+
+	// POST must fail for http://foobar/a/b/c uri.
+	dialsCount = 0
+	_, _, err = c.Post(nil, "http://foobar/a/b/c", &args)
+	if err == nil {
+		t.Fatalf("expecting error")
+	}
+}
+
 type writeErrorConn struct {
 	net.Conn
 }
@@ -2294,6 +2429,10 @@ func TestHostClientMaxConnWaitTimeoutError(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+
+	// Prevent a race condition with the conns cleaner that might still be running.
+	c.connsLock.Lock()
+	defer c.connsLock.Unlock()
 
 	if c.connsWait.len() > 0 {
 		t.Errorf("connsWait has %v items remaining", c.connsWait.len())

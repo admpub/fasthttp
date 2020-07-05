@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"path"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -736,5 +737,39 @@ func TestServeFileContentType(t *testing.T) {
 	expected := []byte("image/png")
 	if !bytes.Equal(resp.Header.ContentType(), expected) {
 		t.Fatalf("Unexpected Content-Type, expected: %q got %q", expected, resp.Header.ContentType())
+	}
+}
+
+func TestServeFileDirectoryRedirect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.SkipNow()
+	}
+
+	t.Parallel()
+
+	var ctx RequestCtx
+	var req Request
+	req.SetRequestURI("http://foobar.com")
+	ctx.Init(&req, nil, nil)
+
+	ctx.Request.Reset()
+	ctx.Response.Reset()
+	ServeFile(&ctx, ".git")
+	if ctx.Response.StatusCode() != StatusFound {
+		t.Fatalf("Unexpected status code %d for directory '/.git' without trailing slash. Expecting %d.", ctx.Response.StatusCode(), StatusFound)
+	}
+
+	ctx.Request.Reset()
+	ctx.Response.Reset()
+	ServeFile(&ctx, ".git/")
+	if ctx.Response.StatusCode() != StatusOK {
+		t.Fatalf("Unexpected status code %d for directory '/.git/' with trailing slash. Expecting %d.", ctx.Response.StatusCode(), StatusOK)
+	}
+
+	ctx.Request.Reset()
+	ctx.Response.Reset()
+	ServeFile(&ctx, "fs.go")
+	if ctx.Response.StatusCode() != StatusOK {
+		t.Fatalf("Unexpected status code %d for file '/fs.go'. Expecting %d.", ctx.Response.StatusCode(), StatusOK)
 	}
 }

@@ -1888,7 +1888,7 @@ func TestSingleEchoConn(t *testing.T) {
 	if res.StatusCode() != 345 {
 		t.Fatalf("unexpected status code: %d. Expecting 345", res.StatusCode())
 	}
-	expected := "POST /a/b HTTP/1.1\r\nUser-Agent: fasthttp\r\nHost: foobar\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\ntest"
+	expected := "POST /a/b HTTP/1.1\r\nUser-Agent: " + string(defaultUserAgent) + "\r\nHost: foobar\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\ntest"
 	if string(res.Body()) != expected {
 		t.Fatalf("unexpected body: %q. Expecting %q", res.Body(), expected)
 	}

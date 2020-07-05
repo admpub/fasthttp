@@ -6,9 +6,9 @@ import (
 	"io"
 	"sync"
 
+	"github.com/admpub/fasthttp/stackless"
 	"github.com/andybalholm/brotli"
 	"github.com/valyala/bytebufferpool"
-	"github.com/valyala/fasthttp/stackless"
 )
 
 // Supported compression levels.

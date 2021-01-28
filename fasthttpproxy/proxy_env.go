@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/net/http/httpproxy"
 
-	"github.com/valyala/fasthttp"
+	"github.com/admpub/fasthttp"
 )
 
 // FasthttpProxyHTTPDialer returns a fasthttp.DialFunc that dials using

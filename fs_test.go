@@ -50,6 +50,8 @@ func TestNewVHostPathRewriter(t *testing.T) {
 }
 
 func TestNewVHostPathRewriterMaliciousHost(t *testing.T) {
+	t.Parallel()
+
 	var ctx RequestCtx
 	var req Request
 	req.Header.SetHost("/../../../etc/passwd")
@@ -70,9 +72,13 @@ func testPathNotFound(t *testing.T, pathNotFoundFunc RequestHandler) {
 	req.SetRequestURI("http//some.url/file")
 	ctx.Init(&req, nil, TestLogger{t})
 
+	stop := make(chan struct{})
+	defer close(stop)
+
 	fs := &FS{
 		Root:         "./",
 		PathNotFound: pathNotFoundFunc,
+		CleanStop:    stop,
 	}
 	fs.NewRequestHandler()(&ctx)
 
@@ -297,11 +303,15 @@ func TestServeFileUncompressed(t *testing.T) {
 }
 
 func TestFSByteRangeConcurrent(t *testing.T) {
-	t.Parallel()
+	// This test can't run parallel as files in / might by changed by other tests.
+
+	stop := make(chan struct{})
+	defer close(stop)
 
 	fs := &FS{
 		Root:            ".",
 		AcceptByteRange: true,
+		CleanStop:       stop,
 	}
 	h := fs.NewRequestHandler()
 
@@ -327,11 +337,15 @@ func TestFSByteRangeConcurrent(t *testing.T) {
 }
 
 func TestFSByteRangeSingleThread(t *testing.T) {
-	t.Parallel()
+	// This test can't run parallel as files in / might by changed by other tests.
+
+	stop := make(chan struct{})
+	defer close(stop)
 
 	fs := &FS{
 		Root:            ".",
 		AcceptByteRange: true,
+		CleanStop:       stop,
 	}
 	h := fs.NewRequestHandler()
 
@@ -468,11 +482,15 @@ func testParseByteRangeError(t *testing.T, v string, contentLength int) {
 func TestFSCompressConcurrent(t *testing.T) {
 	// This test can't run parallel as files in / might by changed by other tests.
 
+	stop := make(chan struct{})
+	defer close(stop)
+
 	fs := &FS{
 		Root:               ".",
 		GenerateIndexPages: true,
 		Compress:           true,
 		CompressBrotli:     true,
+		CleanStop:          stop,
 	}
 	h := fs.NewRequestHandler()
 
@@ -492,7 +510,7 @@ func TestFSCompressConcurrent(t *testing.T) {
 	for i := 0; i < concurrency; i++ {
 		select {
 		case <-ch:
-		case <-time.After(time.Second * 2):
+		case <-time.After(time.Second * 3):
 			t.Fatalf("timeout")
 		}
 	}
@@ -501,11 +519,15 @@ func TestFSCompressConcurrent(t *testing.T) {
 func TestFSCompressSingleThread(t *testing.T) {
 	// This test can't run parallel as files in / might by changed by other tests.
 
+	stop := make(chan struct{})
+	defer close(stop)
+
 	fs := &FS{
 		Root:               ".",
 		GenerateIndexPages: true,
 		Compress:           true,
 		CompressBrotli:     true,
+		CleanStop:          stop,
 	}
 	h := fs.NewRequestHandler()
 
@@ -798,11 +820,11 @@ func TestServeFileContentType(t *testing.T) {
 }
 
 func TestServeFileDirectoryRedirect(t *testing.T) {
+	t.Parallel()
+
 	if runtime.GOOS == "windows" {
 		t.SkipNow()
 	}
-
-	t.Parallel()
 
 	var ctx RequestCtx
 	var req Request

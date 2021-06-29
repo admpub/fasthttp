@@ -21,6 +21,8 @@ import (
 )
 
 func TestCloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
 	ln := fasthttputil.NewInmemoryListener()
 
 	s := &Server{
@@ -68,17 +70,68 @@ func TestCloseIdleConnections(t *testing.T) {
 	}
 }
 
+func TestPipelineClientSetUserAgent(t *testing.T) {
+	t.Parallel()
+
+	testPipelineClientSetUserAgent(t, 0)
+}
+
+func TestPipelineClientSetUserAgentTimeout(t *testing.T) {
+	t.Parallel()
+
+	testPipelineClientSetUserAgent(t, time.Second)
+}
+
+func testPipelineClientSetUserAgent(t *testing.T, timeout time.Duration) {
+	ln := fasthttputil.NewInmemoryListener()
+
+	userAgentSeen := ""
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			userAgentSeen = string(ctx.UserAgent())
+		},
+	}
+	go s.Serve(ln) //nolint:errcheck
+
+	userAgent := "I'm not fasthttp"
+	c := &HostClient{
+		Name: userAgent,
+		Dial: func(addr string) (net.Conn, error) {
+			return ln.Dial()
+		},
+	}
+	req := AcquireRequest()
+	res := AcquireResponse()
+
+	req.SetRequestURI("http://example.com")
+
+	var err error
+	if timeout <= 0 {
+		err = c.Do(req, res)
+	} else {
+		err = c.DoTimeout(req, res, timeout)
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userAgentSeen != userAgent {
+		t.Fatalf("User-Agent defers %q != %q", userAgentSeen, userAgent)
+	}
+}
+
 func TestPipelineClientIssue832(t *testing.T) {
 	t.Parallel()
 
 	ln := fasthttputil.NewInmemoryListener()
 
 	req := AcquireRequest()
-	defer ReleaseRequest(req)
+	// Don't defer ReleaseRequest as we use it in a goroutine that might not be done at the end.
+
 	req.SetHost("example.com")
 
 	res := AcquireResponse()
-	defer ReleaseResponse(res)
+	// Don't defer ReleaseResponse as we use it in a goroutine that might not be done at the end.
 
 	client := PipelineClient{
 		Dial: func(addr string) (net.Conn, error) {
@@ -116,7 +169,7 @@ func TestPipelineClientIssue832(t *testing.T) {
 	}()
 
 	select {
-	case <-time.After(time.Second):
+	case <-time.After(time.Second * 2):
 		t.Fatal("PipelineClient did not restart worker")
 	case <-done:
 	}
@@ -228,10 +281,7 @@ func TestClientURLAuth(t *testing.T) {
 }
 
 func TestClientNilResp(t *testing.T) {
-	// For some reason running this test in parallel sometimes
-	// triggers the race checker. I have not been able to find an
-	// actual race condition so I think it's something else going wrong.
-	// For now just don't run this test in parallel.
+	t.Parallel()
 
 	ln := fasthttputil.NewInmemoryListener()
 	s := &Server{
@@ -251,6 +301,35 @@ func TestClientNilResp(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := c.DoTimeout(req, nil, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+}
+
+func TestPipelineClientNilResp(t *testing.T) {
+	t.Parallel()
+
+	ln := fasthttputil.NewInmemoryListener()
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+		},
+	}
+	go s.Serve(ln) //nolint:errcheck
+	c := &PipelineClient{
+		Dial: func(addr string) (net.Conn, error) {
+			return ln.Dial()
+		},
+	}
+	req := AcquireRequest()
+	req.Header.SetMethod(MethodGet)
+	req.SetRequestURI("http://example.com")
+	if err := c.Do(req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DoTimeout(req, nil, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DoDeadline(req, nil, time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -287,7 +366,6 @@ func TestClientParseConn(t *testing.T) {
 	if !regexp.MustCompile(`^127\.0\.0\.1:[0-9]{4,5}$`).MatchString(res.LocalAddr().String()) {
 		t.Fatalf("res LocalAddr addr match fail: %s, hope match: %s", res.LocalAddr().String(), "^127.0.0.1:[0-9]{4,5}$")
 	}
-
 }
 
 func TestClientPostArgs(t *testing.T) {
@@ -369,7 +447,6 @@ func TestClientRedirectSameSchema(t *testing.T) {
 		t.Fatalf("HostClient error code response %d", statusCode)
 		return
 	}
-
 }
 
 func TestClientRedirectClientChangingSchemaHttp2Https(t *testing.T) {
@@ -449,12 +526,16 @@ func testClientRedirectListener(t *testing.T, isTLS bool) net.Listener {
 	var tlsConfig *tls.Config
 
 	if isTLS {
-		certFile := "./ssl-cert-snakeoil.pem"
-		keyFile := "./ssl-cert-snakeoil.key"
-		cert, err1 := tls.LoadX509KeyPair(certFile, keyFile)
-		if err1 != nil {
-			t.Fatalf("Cannot load TLS certificate: %s", err1)
+		certData, keyData, kerr := GenerateTestCertificate("localhost")
+		if kerr != nil {
+			t.Fatal(kerr)
 		}
+
+		cert, kerr := tls.X509KeyPair(certData, keyData)
+		if kerr != nil {
+			t.Fatal(kerr)
+		}
+
 		tlsConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
 		}
@@ -547,19 +628,13 @@ func TestClientHeaderCase(t *testing.T) {
 func TestClientReadTimeout(t *testing.T) {
 	t.Parallel()
 
-	// This test is rather slow and increase the total test time
-	// from 2.5 seconds to 6.5 seconds.
-	if testing.Short() {
-		t.Skip("skipping test in short mode")
-	}
-
 	ln := fasthttputil.NewInmemoryListener()
 
 	timeout := false
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {
 			if timeout {
-				time.Sleep(time.Minute)
+				time.Sleep(time.Second)
 			} else {
 				timeout = true
 			}
@@ -569,7 +644,7 @@ func TestClientReadTimeout(t *testing.T) {
 	go s.Serve(ln) //nolint:errcheck
 
 	c := &HostClient{
-		ReadTimeout:               time.Second * 4,
+		ReadTimeout:               time.Millisecond * 400,
 		MaxIdemponentCallAttempts: 1,
 		Dial: func(addr string) (net.Conn, error) {
 			return ln.Dial()
@@ -612,8 +687,8 @@ func TestClientReadTimeout(t *testing.T) {
 	select {
 	case <-done:
 		// This shouldn't take longer than the timeout times the number of requests it is going to try to do.
-		// Give it 2 seconds extra seconds just to be sure.
-	case <-time.After(c.ReadTimeout*time.Duration(c.MaxIdemponentCallAttempts) + time.Second*2):
+		// Give it an extra second just to be sure.
+	case <-time.After(c.ReadTimeout*time.Duration(c.MaxIdemponentCallAttempts) + time.Second):
 		t.Fatal("Client.ReadTimeout didn't work")
 	}
 }
@@ -928,6 +1003,76 @@ func testPipelineClientDo(t *testing.T, c *PipelineClient) {
 	ReleaseResponse(resp)
 }
 
+func TestPipelineClientDoDisableHeaderNamesNormalizing(t *testing.T) {
+	t.Parallel()
+
+	testPipelineClientDisableHeaderNamesNormalizing(t, 0)
+}
+
+func TestPipelineClientDoTimeoutDisableHeaderNamesNormalizing(t *testing.T) {
+	t.Parallel()
+
+	testPipelineClientDisableHeaderNamesNormalizing(t, time.Second)
+}
+
+func testPipelineClientDisableHeaderNamesNormalizing(t *testing.T, timeout time.Duration) {
+	ln := fasthttputil.NewInmemoryListener()
+
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			ctx.Response.Header.Set("foo-BAR", "baz")
+		},
+		DisableHeaderNamesNormalizing: true,
+	}
+
+	serverStopCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Errorf("unexpected error: %s", err)
+		}
+		close(serverStopCh)
+	}()
+
+	c := &PipelineClient{
+		Dial: func(addr string) (net.Conn, error) {
+			return ln.Dial()
+		},
+		DisableHeaderNamesNormalizing: true,
+	}
+
+	var req Request
+	req.SetRequestURI("http://aaaai.com/bsdf?sddfsd")
+	var resp Response
+	for i := 0; i < 5; i++ {
+		if timeout > 0 {
+			if err := c.DoTimeout(&req, &resp, timeout); err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+		} else {
+			if err := c.Do(&req, &resp); err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+		}
+		hv := resp.Header.Peek("foo-BAR")
+		if string(hv) != "baz" {
+			t.Fatalf("unexpected header value: %q. Expecting %q", hv, "baz")
+		}
+		hv = resp.Header.Peek("Foo-Bar")
+		if len(hv) > 0 {
+			t.Fatalf("unexpected non-empty header value %q", hv)
+		}
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	select {
+	case <-serverStopCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
 func TestClientDoTimeoutDisableHeaderNamesNormalizing(t *testing.T) {
 	t.Parallel()
 
@@ -1132,6 +1277,8 @@ func TestHostClientPendingRequests(t *testing.T) {
 }
 
 func TestHostClientMaxConnsWithDeadline(t *testing.T) {
+	t.Parallel()
+
 	var (
 		emptyBodyCount uint8
 		ln             = fasthttputil.NewInmemoryListener()
@@ -1802,6 +1949,70 @@ func TestClientRetryRequestWithCustomDecider(t *testing.T) {
 	}
 }
 
+func TestHostClientTransport(t *testing.T) {
+	t.Parallel()
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			ctx.WriteString("abcd") //nolint:errcheck
+		},
+	}
+	serverStopCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Errorf("unexpected error: %s", err)
+		}
+		close(serverStopCh)
+	}()
+
+	c := &HostClient{
+		Addr: "foobar",
+		Transport: func() TransportFunc {
+			c, _ := ln.Dial()
+
+			br := bufio.NewReader(c)
+			bw := bufio.NewWriter(c)
+
+			return func(req *Request, res *Response) error {
+				if err := req.Write(bw); err != nil {
+					return err
+				}
+
+				if err := bw.Flush(); err != nil {
+					return err
+				}
+
+				return res.Read(br)
+			}
+		}(),
+	}
+
+	for i := 0; i < 5; i++ {
+		statusCode, body, err := c.Get(nil, "http://aaaa.com/bbb/cc")
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if statusCode != StatusOK {
+			t.Fatalf("unexpected status code %d. Expecting %d", statusCode, StatusOK)
+		}
+		if string(body) != "abcd" {
+			t.Fatalf("unexpected body %q. Expecting %q", body, "abcd")
+		}
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverStopCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
 type writeErrorConn struct {
 	net.Conn
 }
@@ -2251,12 +2462,16 @@ func startEchoServerExt(t *testing.T, network, addr string, isTLS bool) *testEch
 	var ln net.Listener
 	var err error
 	if isTLS {
-		certFile := "./ssl-cert-snakeoil.pem"
-		keyFile := "./ssl-cert-snakeoil.key"
-		cert, err1 := tls.LoadX509KeyPair(certFile, keyFile)
-		if err1 != nil {
-			t.Fatalf("Cannot load TLS certificate: %s", err1)
+		certData, keyData, kerr := GenerateTestCertificate("localhost")
+		if kerr != nil {
+			t.Fatal(kerr)
 		}
+
+		cert, kerr := tls.X509KeyPair(certData, keyData)
+		if kerr != nil {
+			t.Fatal(kerr)
+		}
+
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{cert},
 		}
@@ -2297,9 +2512,6 @@ func startEchoServerExt(t *testing.T, network, addr string, isTLS bool) *testEch
 func TestClientTLSHandshakeTimeout(t *testing.T) {
 	t.Parallel()
 
-	if testing.Short() {
-		t.Skip("skipping test in short mode")
-	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -2322,8 +2534,8 @@ func TestClientTLSHandshakeTimeout(t *testing.T) {
 	}()
 
 	client := Client{
-		WriteTimeout: 1 * time.Second,
-		ReadTimeout:  1 * time.Second,
+		WriteTimeout: 100 * time.Millisecond,
+		ReadTimeout:  100 * time.Millisecond,
 	}
 
 	_, _, err = client.Get(nil, "https://"+addr)
@@ -2337,6 +2549,8 @@ func TestClientTLSHandshakeTimeout(t *testing.T) {
 }
 
 func TestHostClientMaxConnWaitTimeoutSuccess(t *testing.T) {
+	t.Parallel()
+
 	var (
 		emptyBodyCount uint8
 		ln             = fasthttputil.NewInmemoryListener()
@@ -2366,7 +2580,7 @@ func TestHostClientMaxConnWaitTimeoutSuccess(t *testing.T) {
 			return ln.Dial()
 		},
 		MaxConns:           1,
-		MaxConnWaitTimeout: 200 * time.Millisecond,
+		MaxConnWaitTimeout: time.Second * 2,
 	}
 
 	for i := 0; i < 5; i++ {
@@ -2404,7 +2618,7 @@ func TestHostClientMaxConnWaitTimeoutSuccess(t *testing.T) {
 	}
 	select {
 	case <-serverStopCh:
-	case <-time.After(time.Second):
+	case <-time.After(time.Second * 5):
 		t.Fatalf("timeout")
 	}
 
@@ -2414,6 +2628,8 @@ func TestHostClientMaxConnWaitTimeoutSuccess(t *testing.T) {
 }
 
 func TestHostClientMaxConnWaitTimeoutError(t *testing.T) {
+	t.Parallel()
+
 	var (
 		emptyBodyCount uint8
 		ln             = fasthttputil.NewInmemoryListener()
@@ -2473,7 +2689,6 @@ func TestHostClientMaxConnWaitTimeoutError(t *testing.T) {
 					t.Errorf("unexpected body %q. Expecting %q", body, "abcd")
 				}
 			}
-
 		}()
 	}
 	wg.Wait()
@@ -2503,6 +2718,8 @@ func TestHostClientMaxConnWaitTimeoutError(t *testing.T) {
 }
 
 func TestHostClientMaxConnWaitTimeoutWithEarlierDeadline(t *testing.T) {
+	t.Parallel()
+
 	var (
 		emptyBodyCount uint8
 		ln             = fasthttputil.NewInmemoryListener()
@@ -2566,7 +2783,6 @@ func TestHostClientMaxConnWaitTimeoutWithEarlierDeadline(t *testing.T) {
 					t.Errorf("unexpected body %q. Expecting %q", body, "abcd")
 				}
 			}
-
 		}()
 	}
 	wg.Wait()

@@ -34,6 +34,8 @@ func TestResponseEmptyTransferEncoding(t *testing.T) {
 
 // Don't send the fragment/hash/# part of a URL to the server.
 func TestFragmentInURIRequest(t *testing.T) {
+	t.Parallel()
+
 	var req Request
 	req.SetRequestURI("https://docs.gitlab.com/ee/user/project/integrations/webhooks.html#events")
 
@@ -48,6 +50,8 @@ func TestFragmentInURIRequest(t *testing.T) {
 }
 
 func TestIssue875(t *testing.T) {
+	t.Parallel()
+
 	type testcase struct {
 		uri              string
 		expectedRedirect string
@@ -738,6 +742,23 @@ func TestResponseReadEOF(t *testing.T) {
 	}
 	if err == io.EOF {
 		t.Fatalf("expecting non-EOF error")
+	}
+}
+
+func TestRequestReadNoBody(t *testing.T) {
+	t.Parallel()
+
+	var r Request
+
+	br := bufio.NewReader(bytes.NewBufferString("GET / HTTP/1.1\r\n\r\n"))
+	err := r.Read(br)
+	r.SetHost("foobar")
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	s := r.String()
+	if strings.Contains(s, "Content-Length: ") {
+		t.Fatalf("unexpected Content-Length")
 	}
 }
 
@@ -2210,8 +2231,9 @@ func TestRequestRawBodyCopyTo(t *testing.T) {
 }
 
 type testReader struct {
-	read chan (int)
-	cb   chan (struct{})
+	read    chan (int)
+	cb      chan (struct{})
+	onClose func() error
 }
 
 func (r *testReader) Read(b []byte) (int, error) {
@@ -2228,6 +2250,13 @@ func (r *testReader) Read(b []byte) (int, error) {
 	}
 
 	return read, nil
+}
+
+func (r *testReader) Close() error {
+	if r.onClose != nil {
+		return r.onClose()
+	}
+	return nil
 }
 
 func TestResponseImmediateHeaderFlushRegressionFixedLength(t *testing.T) {
@@ -2301,6 +2330,42 @@ func TestResponseImmediateHeaderFlushFixedLength(t *testing.T) {
 	<-waitForIt
 }
 
+func TestResponseImmediateHeaderFlushFixedLengthSkipBody(t *testing.T) {
+	t.Parallel()
+
+	var r Response
+
+	r.ImmediateHeaderFlush = true
+	r.SkipBody = true
+
+	ch := make(chan int)
+	cb := make(chan struct{})
+
+	buf := &testReader{read: ch, cb: cb}
+
+	r.SetBodyStream(buf, 0)
+
+	b := []byte{}
+	w := bytes.NewBuffer(b)
+	bb := bufio.NewWriter(w)
+
+	var headersOnClose string
+	buf.onClose = func() error {
+		headersOnClose = w.String()
+		return nil
+	}
+
+	bw := &r
+
+	if err := bw.Write(bb); err != nil {
+		t.Errorf("unexpected error: %s", err)
+	}
+
+	if !strings.Contains(headersOnClose, "Content-Length: 0") {
+		t.Fatalf("Expected headers to be eagerly flushed")
+	}
+}
+
 func TestResponseImmediateHeaderFlushChunked(t *testing.T) {
 	t.Parallel()
 
@@ -2345,6 +2410,42 @@ func TestResponseImmediateHeaderFlushChunked(t *testing.T) {
 	ch <- -1
 
 	<-waitForIt
+}
+
+func TestResponseImmediateHeaderFlushChunkedNoBody(t *testing.T) {
+	t.Parallel()
+
+	var r Response
+
+	r.ImmediateHeaderFlush = true
+	r.SkipBody = true
+
+	ch := make(chan int)
+	cb := make(chan struct{})
+
+	buf := &testReader{read: ch, cb: cb}
+
+	r.SetBodyStream(buf, -1)
+
+	b := []byte{}
+	w := bytes.NewBuffer(b)
+	bb := bufio.NewWriter(w)
+
+	var headersOnClose string
+	buf.onClose = func() error {
+		headersOnClose = w.String()
+		return nil
+	}
+
+	bw := &r
+
+	if err := bw.Write(bb); err != nil {
+		t.Errorf("unexpected error: %s", err)
+	}
+
+	if !strings.Contains(headersOnClose, "Transfer-Encoding: chunked") {
+		t.Fatalf("Expected headers to be eagerly flushed")
+	}
 }
 
 type ErroneousBodyStream struct {

@@ -42,7 +42,7 @@ func testBrotliBytesSingleCase(s string) error {
 
 	unbrotliedS, err := AppendUnbrotliBytes(prefix, brotlipedS[len(prefix):])
 	if err != nil {
-		return fmt.Errorf("unexpected error when uncompressing %q: %s", s, err)
+		return fmt.Errorf("unexpected error when uncompressing %q: %w", s, err)
 	}
 	if !bytes.Equal(unbrotliedS[:len(prefix)], prefix) {
 		return fmt.Errorf("unexpected prefix when uncompressing %q: %q. Expecting %q", s, unbrotliedS[:len(prefix)], prefix)
@@ -83,17 +83,17 @@ func testBrotliCompressSingleCase(s string) error {
 	var buf bytes.Buffer
 	zw := acquireStacklessBrotliWriter(&buf, CompressDefaultCompression)
 	if _, err := zw.Write([]byte(s)); err != nil {
-		return fmt.Errorf("unexpected error: %s. s=%q", err, s)
+		return fmt.Errorf("unexpected error: %w. s=%q", err, s)
 	}
 	releaseStacklessBrotliWriter(zw, CompressDefaultCompression)
 
 	zr, err := acquireBrotliReader(&buf)
 	if err != nil {
-		return fmt.Errorf("unexpected error: %s. s=%q", err, s)
+		return fmt.Errorf("unexpected error: %w. s=%q", err, s)
 	}
 	body, err := ioutil.ReadAll(zr)
 	if err != nil {
-		return fmt.Errorf("unexpected error: %s. s=%q", err, s)
+		return fmt.Errorf("unexpected error: %w. s=%q", err, s)
 	}
 	if string(body) != s {
 		return fmt.Errorf("unexpected string after decompression: %q. Expecting %q", body, s)
@@ -118,7 +118,7 @@ func TestCompressHandlerBrotliLevel(t *testing.T) {
 	s := ctx.Response.String()
 	br := bufio.NewReader(bytes.NewBufferString(s))
 	if err := resp.Read(br); err != nil {
-		t.Fatalf("unexpected error: %s", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	ce := resp.Header.Peek(HeaderContentEncoding)
 	if string(ce) != "" {
@@ -138,7 +138,7 @@ func TestCompressHandlerBrotliLevel(t *testing.T) {
 	s = ctx.Response.String()
 	br = bufio.NewReader(bytes.NewBufferString(s))
 	if err := resp.Read(br); err != nil {
-		t.Fatalf("unexpected error: %s", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	ce = resp.Header.Peek(HeaderContentEncoding)
 	if string(ce) != "gzip" {
@@ -146,7 +146,7 @@ func TestCompressHandlerBrotliLevel(t *testing.T) {
 	}
 	body, err := resp.BodyGunzip()
 	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if string(body) != expectedBody {
 		t.Fatalf("unexpected body %q. Expecting %q", body, expectedBody)
@@ -161,7 +161,7 @@ func TestCompressHandlerBrotliLevel(t *testing.T) {
 	s = ctx.Response.String()
 	br = bufio.NewReader(bytes.NewBufferString(s))
 	if err := resp.Read(br); err != nil {
-		t.Fatalf("unexpected error: %s", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	ce = resp.Header.Peek(HeaderContentEncoding)
 	if string(ce) != "br" {
@@ -169,7 +169,7 @@ func TestCompressHandlerBrotliLevel(t *testing.T) {
 	}
 	body, err = resp.BodyUnbrotli()
 	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if string(body) != expectedBody {
 		t.Fatalf("unexpected body %q. Expecting %q", body, expectedBody)

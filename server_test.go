@@ -254,7 +254,7 @@ func TestServerConnState(t *testing.T) {
 	states := make([]string, 0)
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {},
-		ConnState: func(conn net.Conn, state ConnState) {
+		ConnState: func(_ net.Conn, state ConnState) {
 			states = append(states, state.String())
 		},
 	}
@@ -1943,7 +1943,7 @@ func TestCompressHandler(t *testing.T) {
 	if err := resp.Read(br); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ce := resp.Header.Peek(HeaderContentEncoding)
+	ce := resp.Header.ContentEncoding()
 	if string(ce) != "" {
 		t.Fatalf("unexpected Content-Encoding: %q. Expecting %q", ce, "")
 	}
@@ -1963,7 +1963,7 @@ func TestCompressHandler(t *testing.T) {
 	if err := resp.Read(br); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ce = resp.Header.Peek(HeaderContentEncoding)
+	ce = resp.Header.ContentEncoding()
 	if string(ce) != "gzip" {
 		t.Fatalf("unexpected Content-Encoding: %q. Expecting %q", ce, "gzip")
 	}
@@ -1986,7 +1986,7 @@ func TestCompressHandler(t *testing.T) {
 	if err := resp.Read(br); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ce = resp.Header.Peek(HeaderContentEncoding)
+	ce = resp.Header.ContentEncoding()
 	if string(ce) != "gzip" {
 		t.Fatalf("unexpected Content-Encoding: %q. Expecting %q", ce, "gzip")
 	}
@@ -2009,7 +2009,7 @@ func TestCompressHandler(t *testing.T) {
 	if err := resp.Read(br); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	ce = resp.Header.Peek(HeaderContentEncoding)
+	ce = resp.Header.ContentEncoding()
 	if string(ce) != "deflate" {
 		t.Fatalf("unexpected Content-Encoding: %q. Expecting %q", ce, "deflate")
 	}
@@ -2103,7 +2103,7 @@ func TestServerErrorHandler(t *testing.T) {
 
 	s := &Server{
 		Handler: func(ctx *RequestCtx) {},
-		ErrorHandler: func(ctx *RequestCtx, err error) {
+		ErrorHandler: func(ctx *RequestCtx, _ error) {
 			resultReqStr = ctx.Request.String()
 			resultRespStr = ctx.Response.String()
 		},
@@ -2985,7 +2985,7 @@ func TestServerMaxRequestsPerConn(t *testing.T) {
 	if !resp.ConnectionClose() {
 		t.Fatal("Response must have 'connection: close' header")
 	}
-	verifyResponseHeader(t, &resp.Header, 200, 0, string(defaultContentType))
+	verifyResponseHeader(t, &resp.Header, 200, 0, string(defaultContentType), "")
 
 	data, err := ioutil.ReadAll(br)
 	if err != nil {
@@ -3681,6 +3681,7 @@ func TestStreamRequestBody(t *testing.T) {
 			checkReader(t, ctx.RequestBodyStream(), part2)
 		},
 		StreamRequestBody: true,
+		Logger:            &testLogger{},
 	}
 
 	pipe := fasthttputil.NewPipeConns()
@@ -3828,7 +3829,7 @@ func TestMaxReadTimeoutPerRequest(t *testing.T) {
 
 	headers := []byte(fmt.Sprintf("POST /foo2 HTTP/1.1\r\nHost: aaa.com\r\nContent-Length: %d\r\nContent-Type: aa\r\n\r\n", 5*1024))
 	s := &Server{
-		Handler: func(ctx *RequestCtx) {
+		Handler: func(_ *RequestCtx) {
 			t.Error("shouldn't reach handler")
 		},
 		HeaderReceived: func(header *RequestHeader) RequestConfig {
@@ -3971,7 +3972,7 @@ func TestServerChunkedResponse(t *testing.T) {
 				if err := w.Flush(); err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
-				time.Sleep(time.Second)
+				time.Sleep(time.Millisecond * 100)
 			}
 		})
 		for k, v := range trailer {
@@ -4017,7 +4018,7 @@ func verifyResponse(t *testing.T, r *bufio.Reader, expectedStatusCode int, expec
 	if !bytes.Equal(resp.Body(), []byte(expectedBody)) {
 		t.Fatalf("Unexpected body %q. Expected %q", resp.Body(), []byte(expectedBody))
 	}
-	verifyResponseHeader(t, &resp.Header, expectedStatusCode, len(resp.Body()), expectedContentType)
+	verifyResponseHeader(t, &resp.Header, expectedStatusCode, len(resp.Body()), expectedContentType, "")
 	return &resp
 }
 

@@ -1,11 +1,9 @@
 //go:build !race
-// +build !race
 
 package fasthttp
 
 import (
 	"net"
-
 	"testing"
 )
 

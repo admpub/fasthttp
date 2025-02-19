@@ -230,16 +230,15 @@ func TestURICopyTo(t *testing.T) {
 	var u URI
 	var copyU URI
 	u.CopyTo(&copyU)
-	if !reflect.DeepEqual(u, copyU) { //nolint:govet
-		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU) //nolint:govet
+	if !reflect.DeepEqual(&u, &copyU) {
+		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", &u, &copyU)
 	}
 
 	u.UpdateBytes([]byte("https://example.com/foo?bar=baz&baraz#qqqq"))
 	u.CopyTo(&copyU)
-	if !reflect.DeepEqual(u, copyU) { //nolint:govet
-		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", u, copyU) //nolint:govet
+	if !reflect.DeepEqual(&u, &copyU) {
+		t.Fatalf("URICopyTo fail, u: \n%+v\ncopyu: \n%+v\n", &u, &copyU)
 	}
-
 }
 
 func TestURIFullURI(t *testing.T) {
@@ -314,35 +313,35 @@ func testURIParseScheme(t *testing.T, uri, expectedScheme, expectedHost, expecte
 		t.Fatalf("Unexpected scheme %q. Expecting %q for uri %q", u.Scheme(), expectedScheme, uri)
 	}
 	if string(u.Host()) != expectedHost {
-		t.Fatalf("Unexepcted host %q. Expecting %q for uri %q", u.Host(), expectedHost, uri)
+		t.Fatalf("Unexpected host %q. Expecting %q for uri %q", u.Host(), expectedHost, uri)
 	}
 	if string(u.RequestURI()) != expectedRequestURI {
-		t.Fatalf("Unexepcted requestURI %q. Expecting %q for uri %q", u.RequestURI(), expectedRequestURI, uri)
+		t.Fatalf("Unexpected requestURI %q. Expecting %q for uri %q", u.RequestURI(), expectedRequestURI, uri)
 	}
 	if string(u.hash) != expectedHash {
-		t.Fatalf("Unexepcted hash %q. Expecting %q for uri %q", u.hash, expectedHash, uri)
+		t.Fatalf("Unexpected hash %q. Expecting %q for uri %q", u.hash, expectedHash, uri)
 	}
 }
 
 func TestIsHttp(t *testing.T) {
 	var u URI
-	if !u.isHttp() || u.isHttps() {
+	if !u.isHTTP() || u.isHTTPS() {
 		t.Fatalf("http scheme is assumed by default and not https")
 	}
 	u.SetSchemeBytes([]byte{})
-	if !u.isHttp() || u.isHttps() {
+	if !u.isHTTP() || u.isHTTPS() {
 		t.Fatalf("empty scheme must be threaten as http and not https")
 	}
 	u.SetScheme("http")
-	if !u.isHttp() || u.isHttps() {
+	if !u.isHTTP() || u.isHTTPS() {
 		t.Fatalf("scheme must be threaten as http and not https")
 	}
 	u.SetScheme("https")
-	if !u.isHttps() || u.isHttp() {
+	if !u.isHTTPS() || u.isHTTP() {
 		t.Fatalf("scheme must be threaten as https and not http")
 	}
 	u.SetScheme("dav")
-	if u.isHttps() || u.isHttp() {
+	if u.isHTTPS() || u.isHTTP() {
 		t.Fatalf("scheme must be threaten as not http and not https")
 	}
 }
@@ -417,7 +416,8 @@ func TestURIParse(t *testing.T) {
 }
 
 func testURIParse(t *testing.T, u *URI, host, uri,
-	expectedURI, expectedHost, expectedPath, expectedPathOriginal, expectedArgs, expectedHash string) {
+	expectedURI, expectedHost, expectedPath, expectedPathOriginal, expectedArgs, expectedHash string,
+) {
 	u.Parse([]byte(host), []byte(uri)) //nolint:errcheck
 
 	if !bytes.Equal(u.FullURI(), []byte(expectedURI)) {
@@ -482,5 +482,19 @@ func TestNoOverwriteInput(t *testing.T) {
 
 	if u.String() != "http://\xaa/" {
 		t.Errorf("%q", u.String())
+	}
+}
+
+func TestFragmentInHost(t *testing.T) {
+	url := "http://google.com#@github.com"
+	u := AcquireURI()
+	defer ReleaseURI(u)
+
+	if err := u.Parse(nil, []byte(url)); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := string(u.Host()); got != "google.com" {
+		t.Fatalf("Unexpected host %q. Expected %q", got, "google.com")
 	}
 }

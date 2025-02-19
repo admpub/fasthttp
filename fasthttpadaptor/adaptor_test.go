@@ -1,15 +1,16 @@
 package fasthttpadaptor
 
 import (
-	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/admpub/fasthttp"
+	"github.com/admpub/fasthttp/fasthttputil"
 )
 
 func TestNewFastHTTPHandler(t *testing.T) {
@@ -20,7 +21,7 @@ func TestNewFastHTTPHandler(t *testing.T) {
 	expectedProtoMajor := 1
 	expectedProtoMinor := 1
 	expectedRequestURI := "/foo/bar?baz=123"
-	expectedBody := "body 123 foo bar baz"
+	expectedBody := "<!doctype html><html>"
 	expectedContentLength := len(expectedBody)
 	expectedHost := "foobar.com"
 	expectedRemoteAddr := "1.2.3.4:6789"
@@ -35,6 +36,7 @@ func TestNewFastHTTPHandler(t *testing.T) {
 	}
 	expectedContextKey := "contextKey"
 	expectedContextValue := "contextValue"
+	expectedContentType := "text/html; charset=utf-8"
 
 	callsCount := 0
 	nethttpH := func(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +68,7 @@ func TestNewFastHTTPHandler(t *testing.T) {
 		if r.RemoteAddr != expectedRemoteAddr {
 			t.Fatalf("unexpected remoteAddr %q. Expecting %q", r.RemoteAddr, expectedRemoteAddr)
 		}
-		body, err := ioutil.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		r.Body.Close()
 		if err != nil {
 			t.Fatalf("unexpected error when reading request body: %v", err)
@@ -91,7 +93,7 @@ func TestNewFastHTTPHandler(t *testing.T) {
 		w.Header().Set("Header1", "value1")
 		w.Header().Set("Header2", "value2")
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, "request body is %q", body)
+		w.Write(body) //nolint:errcheck
 	}
 	fasthttpH := NewFastHTTPHandler(http.HandlerFunc(nethttpH))
 	fasthttpH = setContextValueMiddleware(fasthttpH, expectedContextKey, expectedContextValue)
@@ -102,7 +104,7 @@ func TestNewFastHTTPHandler(t *testing.T) {
 	req.Header.SetMethod(expectedMethod)
 	req.SetRequestURI(expectedRequestURI)
 	req.Header.SetHost(expectedHost)
-	req.BodyWriter().Write([]byte(expectedBody)) // nolint:errcheck
+	req.BodyWriter().Write([]byte(expectedBody)) //nolint:errcheck
 	for k, v := range expectedHeader {
 		req.Header.Set(k, v)
 	}
@@ -129,44 +131,135 @@ func TestNewFastHTTPHandler(t *testing.T) {
 	if string(resp.Header.Peek("Header2")) != "value2" {
 		t.Fatalf("unexpected header value: %q. Expecting %q", resp.Header.Peek("Header2"), "value2")
 	}
-	expectedResponseBody := fmt.Sprintf("request body is %q", expectedBody)
-	if string(resp.Body()) != expectedResponseBody {
-		t.Fatalf("unexpected response body %q. Expecting %q", resp.Body(), expectedResponseBody)
+	if string(resp.Body()) != expectedBody {
+		t.Fatalf("unexpected response body %q. Expecting %q", resp.Body(), expectedBody)
+	}
+	if string(resp.Header.Peek("Content-Type")) != expectedContentType {
+		t.Fatalf("unexpected response content-type %q. Expecting %q", string(resp.Header.Peek("Content-Type")), expectedBody)
 	}
 }
 
-func setContextValueMiddleware(next fasthttp.RequestHandler, key string, value interface{}) fasthttp.RequestHandler {
+func TestNewFastHTTPHandlerWithCookies(t *testing.T) {
+	expectedMethod := fasthttp.MethodPost
+	expectedRequestURI := "/foo/bar?baz=123"
+	expectedHost := "foobar.com"
+	expectedRemoteAddr := "1.2.3.4:6789"
+
+	var ctx fasthttp.RequestCtx
+	var req fasthttp.Request
+
+	req.Header.SetMethod(expectedMethod)
+	req.SetRequestURI(expectedRequestURI)
+	req.Header.SetHost(expectedHost)
+	req.Header.SetCookie("cookieOne", "valueCookieOne")
+	req.Header.SetCookie("cookieTwo", "valueCookieTwo")
+
+	remoteAddr, err := net.ResolveTCPAddr("tcp", expectedRemoteAddr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ctx.Init(&req, remoteAddr, nil)
+
+	nethttpH := func(w http.ResponseWriter, r *http.Request) {
+		// real handler warped by middleware, in this example do nothing
+	}
+	fasthttpH := NewFastHTTPHandler(http.HandlerFunc(nethttpH))
+
+	netMiddleware := func(_ http.ResponseWriter, r *http.Request) {
+		// assume middleware do some change on r, such as reset header's host
+		r.Header.Set("Host", "example.com")
+		// convert ctx again in case request may modify by middleware
+		ctx.Request.Header.Set("Host", r.Header.Get("Host"))
+		// since cookies of r are not changed, expect "cookieOne=valueCookieOne"
+		cookie, _ := r.Cookie("cookieOne")
+		if err != nil {
+			// will error, but if line 172 is commented, then no error will happen
+			t.Errorf("should not error")
+		}
+		if cookie.Value != "valueCookieOne" {
+			t.Errorf("cookie error, expect %s, find %s", "valueCookieOne", cookie.Value)
+		}
+		// instead of using responseWriter and r, use ctx again, like what have done in fiber
+		fasthttpH(&ctx)
+	}
+	fastMiddleware := NewFastHTTPHandler(http.HandlerFunc(netMiddleware))
+	fastMiddleware(&ctx)
+}
+
+func setContextValueMiddleware(next fasthttp.RequestHandler, key string, value any) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
 		ctx.SetUserValue(key, value)
 		next(ctx)
 	}
 }
 
-func TestContentType(t *testing.T) {
+func TestHijack(t *testing.T) {
 	t.Parallel()
 
 	nethttpH := func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("<!doctype html><html>")) //nolint:errcheck
+		if f, ok := w.(http.Hijacker); !ok {
+			t.Errorf("expected http.ResponseWriter to implement http.Hijacker")
+		} else {
+			if _, err := w.Write([]byte("foo")); err != nil {
+				t.Error(err)
+			}
+
+			if c, rw, err := f.Hijack(); err != nil {
+				t.Error(err)
+			} else {
+				if _, err := rw.WriteString("bar"); err != nil {
+					t.Error(err)
+				}
+
+				if err := rw.Flush(); err != nil {
+					t.Error(err)
+				}
+
+				if err := c.Close(); err != nil {
+					t.Error(err)
+				}
+			}
+		}
 	}
-	fasthttpH := NewFastHTTPHandler(http.HandlerFunc(nethttpH))
 
-	var ctx fasthttp.RequestCtx
-	var req fasthttp.Request
-
-	req.SetRequestURI("http://example.com")
-
-	remoteAddr, err := net.ResolveTCPAddr("tcp", "1.2.3.4:80")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	s := &fasthttp.Server{
+		Handler: NewFastHTTPHandler(http.HandlerFunc(nethttpH)),
 	}
-	ctx.Init(&req, remoteAddr, nil)
 
-	fasthttpH(&ctx)
+	ln := fasthttputil.NewInmemoryListener()
 
-	resp := &ctx.Response
-	got := string(resp.Header.Peek("Content-Type"))
-	expected := "text/html; charset=utf-8"
-	if got != expected {
-		t.Errorf("expected %q got %q", expected, got)
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}()
+
+	clientCh := make(chan struct{})
+	go func() {
+		c, err := ln.Dial()
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if _, err = c.Write([]byte("GET / HTTP/1.1\r\nHost: aa\r\n\r\n")); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		buf, err := io.ReadAll(c)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if string(buf) != "foobar" {
+			t.Errorf("unexpected response: %q. Expecting %q", buf, "foobar")
+		}
+
+		close(clientCh)
+	}()
+
+	select {
+	case <-clientCh:
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"sync"
@@ -14,8 +13,6 @@ import (
 )
 
 func TestInmemoryListener(t *testing.T) {
-	t.Parallel()
-
 	ln := NewInmemoryListener()
 
 	ch := make(chan struct{})
@@ -126,7 +123,7 @@ func testInmemoryListenerHTTP(t *testing.T, f func(t *testing.T, client *http.Cl
 	}
 
 	server := &http.Server{
-		Handler: &echoServerHandler{t},
+		Handler: &echoServerHandler{t: t},
 	}
 
 	go func() {
@@ -147,7 +144,8 @@ func testInmemoryListenerHTTPSingle(t *testing.T, client *http.Client, content s
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	b, err := ioutil.ReadAll(res.Body)
+	defer func() { _ = res.Body.Close() }()
+	b, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,16 +156,12 @@ func testInmemoryListenerHTTPSingle(t *testing.T, client *http.Client, content s
 }
 
 func TestInmemoryListenerHTTPSingle(t *testing.T) {
-	t.Parallel()
-
 	testInmemoryListenerHTTP(t, func(t *testing.T, client *http.Client) {
 		testInmemoryListenerHTTPSingle(t, client, "request")
 	})
 }
 
 func TestInmemoryListenerHTTPSerial(t *testing.T) {
-	t.Parallel()
-
 	testInmemoryListenerHTTP(t, func(t *testing.T, client *http.Client) {
 		for i := 0; i < 10; i++ {
 			testInmemoryListenerHTTPSingle(t, client, fmt.Sprintf("request_%d", i))
@@ -176,8 +170,6 @@ func TestInmemoryListenerHTTPSerial(t *testing.T) {
 }
 
 func TestInmemoryListenerHTTPConcurrent(t *testing.T) {
-	t.Parallel()
-
 	testInmemoryListenerHTTP(t, func(t *testing.T, client *http.Client) {
 		var wg sync.WaitGroup
 		for i := 0; i < 10; i++ {
@@ -189,4 +181,93 @@ func TestInmemoryListenerHTTPConcurrent(t *testing.T) {
 		}
 		wg.Wait()
 	})
+}
+
+func acceptLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			panic(err)
+		}
+
+		conn.Close()
+	}
+}
+
+func TestInmemoryListenerAddrDefault(t *testing.T) {
+	ln := NewInmemoryListener()
+
+	verifyAddr(t, ln.Addr(), inmemoryAddr(0))
+
+	go func() {
+		c, err := ln.Dial()
+		if err != nil {
+			panic(err)
+		}
+
+		c.Close()
+	}()
+
+	lc, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	verifyAddr(t, lc.LocalAddr(), inmemoryAddr(0))
+	verifyAddr(t, lc.RemoteAddr(), pipeAddr(0))
+
+	go acceptLoop(ln)
+
+	c, err := ln.Dial()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	verifyAddr(t, c.LocalAddr(), pipeAddr(0))
+	verifyAddr(t, c.RemoteAddr(), inmemoryAddr(0))
+}
+
+func verifyAddr(t *testing.T, got, expected net.Addr) {
+	if got != expected {
+		t.Fatalf("unexpected addr: %v. Expecting %v", got, expected)
+	}
+}
+
+func TestInmemoryListenerAddrCustom(t *testing.T) {
+	ln := NewInmemoryListener()
+
+	listenerAddr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+
+	ln.SetLocalAddr(listenerAddr)
+
+	verifyAddr(t, ln.Addr(), listenerAddr)
+
+	go func() {
+		c, err := ln.Dial()
+		if err != nil {
+			panic(err)
+		}
+
+		c.Close()
+	}()
+
+	lc, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	verifyAddr(t, lc.LocalAddr(), listenerAddr)
+	verifyAddr(t, lc.RemoteAddr(), pipeAddr(0))
+
+	go acceptLoop(ln)
+
+	clientAddr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 65432}
+
+	c, err := ln.DialWithLocalAddr(clientAddr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	verifyAddr(t, c.LocalAddr(), clientAddr)
+	verifyAddr(t, c.RemoteAddr(), listenerAddr)
 }

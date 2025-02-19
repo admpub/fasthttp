@@ -3,7 +3,7 @@ package fasthttp
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"runtime"
@@ -18,9 +18,17 @@ import (
 
 type fakeClientConn struct {
 	net.Conn
+	ch chan struct{}
 	s  []byte
 	n  int
-	ch chan struct{}
+}
+
+func (c *fakeClientConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *fakeClientConn) SetReadDeadline(t time.Time) error {
+	return nil
 }
 
 func (c *fakeClientConn) Write(b []byte) (int, error) {
@@ -157,7 +165,7 @@ func BenchmarkNetHTTPClientDoFastServer(b *testing.B) {
 
 	nn := uint32(0)
 	b.RunParallel(func(pb *testing.PB) {
-		req, err := http.NewRequest(MethodGet, fmt.Sprintf("http://foobar%d.com/aaa/bbb", atomic.AddUint32(&nn, 1)), nil)
+		req, err := http.NewRequest(MethodGet, fmt.Sprintf("http://foobar%d.com/aaa/bbb", atomic.AddUint32(&nn, 1)), http.NoBody)
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)
 		}
@@ -169,7 +177,7 @@ func BenchmarkNetHTTPClientDoFastServer(b *testing.B) {
 			if resp.StatusCode != http.StatusOK {
 				b.Fatalf("unexpected status code: %d", resp.StatusCode)
 			}
-			respBody, err := ioutil.ReadAll(resp.Body)
+			respBody, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
 				b.Fatalf("unexpected error when reading response body: %v", err)
@@ -297,7 +305,7 @@ func benchmarkNetHTTPClientGetEndToEndTCP(b *testing.B, parallelism int) {
 			if resp.StatusCode != http.StatusOK {
 				b.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode, http.StatusOK)
 			}
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
 				b.Fatalf("unexpected error when reading response body: %v", err)
@@ -427,7 +435,7 @@ func benchmarkNetHTTPClientGetEndToEndInmemory(b *testing.B, parallelism int) {
 			if resp.StatusCode != http.StatusOK {
 				b.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode, http.StatusOK)
 			}
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
 				b.Fatalf("unexpected error when reading response body: %v", err)
@@ -542,7 +550,7 @@ func benchmarkNetHTTPClientEndToEndBigResponseInmemory(b *testing.B, parallelism
 	url := "http://unused.host" + requestURI
 	b.SetParallelism(parallelism)
 	b.RunParallel(func(pb *testing.PB) {
-		req, err := http.NewRequest(MethodGet, url, nil)
+		req, err := http.NewRequest(MethodGet, url, http.NoBody)
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)
 		}
@@ -554,7 +562,7 @@ func benchmarkNetHTTPClientEndToEndBigResponseInmemory(b *testing.B, parallelism
 			if resp.StatusCode != http.StatusOK {
 				b.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode, http.StatusOK)
 			}
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
 				b.Fatalf("unexpected error when reading response body: %v", err)

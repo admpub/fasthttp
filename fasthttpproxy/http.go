@@ -1,20 +1,17 @@
 package fasthttpproxy
 
 import (
-	"bufio"
-	"encoding/base64"
-	"fmt"
-	"net"
-	"strings"
 	"time"
 
 	"github.com/admpub/fasthttp"
+	"golang.org/x/net/http/httpproxy"
 )
 
 // FasthttpHTTPDialer returns a fasthttp.DialFunc that dials using
 // the provided HTTP proxy.
 //
 // Example usage:
+//
 //	c := &fasthttp.Client{
 //		Dial: fasthttpproxy.FasthttpHTTPDialer("username:password@localhost:9050"),
 //	}
@@ -24,54 +21,45 @@ func FasthttpHTTPDialer(proxy string) fasthttp.DialFunc {
 
 // FasthttpHTTPDialerTimeout returns a fasthttp.DialFunc that dials using
 // the provided HTTP proxy using the given timeout.
+// The timeout parameter determines both the dial timeout and the CONNECT request timeout.
 //
 // Example usage:
+//
 //	c := &fasthttp.Client{
 //		Dial: fasthttpproxy.FasthttpHTTPDialerTimeout("username:password@localhost:9050", time.Second * 2),
 //	}
 func FasthttpHTTPDialerTimeout(proxy string, timeout time.Duration) fasthttp.DialFunc {
-	var auth string
-	if strings.Contains(proxy, "@") {
-		split := strings.Split(proxy, "@")
-		auth = base64.StdEncoding.EncodeToString([]byte(split[0]))
-		proxy = split[1]
+	d := Dialer{Config: httpproxy.Config{HTTPProxy: proxy, HTTPSProxy: proxy}, Timeout: timeout, ConnectTimeout: timeout}
+	dialFunc, _ := d.GetDialFunc(false)
+	return dialFunc
+}
+
+// FasthttpHTTPDialerDualStack returns a fasthttp.DialFunc that dials using
+// the provided HTTP proxy with support for both IPv4 and IPv6.
+//
+// Example usage:
+//
+//	c := &fasthttp.Client{
+//		Dial: fasthttpproxy.FasthttpHTTPDialerDualStack("username:password@localhost:9050"),
+//	}
+func FasthttpHTTPDialerDualStack(proxy string) fasthttp.DialFunc {
+	return FasthttpHTTPDialerDualStackTimeout(proxy, 0)
+}
+
+// FasthttpHTTPDialerDualStackTimeout returns a fasthttp.DialFunc that dials using
+// the provided HTTP proxy with support for both IPv4 and IPv6, using the given timeout.
+// The timeout parameter determines both the dial timeout and the CONNECT request timeout.
+//
+// Example usage:
+//
+//	c := &fasthttp.Client{
+//		Dial: fasthttpproxy.FasthttpHTTPDialerDualStackTimeout("username:password@localhost:9050", time.Second * 2),
+//	}
+func FasthttpHTTPDialerDualStackTimeout(proxy string, timeout time.Duration) fasthttp.DialFunc {
+	d := Dialer{
+		Config: httpproxy.Config{HTTPProxy: proxy, HTTPSProxy: proxy}, Timeout: timeout, ConnectTimeout: timeout,
+		DialDualStack: true,
 	}
-
-	return func(addr string) (net.Conn, error) {
-		var conn net.Conn
-		var err error
-		if timeout == 0 {
-			conn, err = fasthttp.Dial(proxy)
-		} else {
-			conn, err = fasthttp.DialTimeout(proxy, timeout)
-		}
-		if err != nil {
-			return nil, err
-		}
-
-		req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", addr, addr)
-		if auth != "" {
-			req += "Proxy-Authorization: Basic " + auth + "\r\n"
-		}
-		req += "\r\n"
-
-		if _, err := conn.Write([]byte(req)); err != nil {
-			return nil, err
-		}
-
-		res := fasthttp.AcquireResponse()
-		defer fasthttp.ReleaseResponse(res)
-
-		res.SkipBody = true
-
-		if err := res.Read(bufio.NewReader(conn)); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		if res.Header.StatusCode() != 200 {
-			conn.Close()
-			return nil, fmt.Errorf("could not connect to proxy: %s status code: %d", proxy, res.Header.StatusCode())
-		}
-		return conn, nil
-	}
+	dialFunc, _ := d.GetDialFunc(false)
+	return dialFunc
 }

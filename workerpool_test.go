@@ -1,7 +1,7 @@
 package fasthttp
 
 import (
-	"io/ioutil"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -12,7 +12,7 @@ import (
 func TestWorkerPoolStartStopSerial(t *testing.T) {
 	t.Parallel()
 
-	testWorkerPoolStartStop(t)
+	testWorkerPoolStartStop()
 }
 
 func TestWorkerPoolStartStopConcurrent(t *testing.T) {
@@ -22,7 +22,7 @@ func TestWorkerPoolStartStopConcurrent(t *testing.T) {
 	ch := make(chan struct{}, concurrency)
 	for i := 0; i < concurrency; i++ {
 		go func() {
-			testWorkerPoolStartStop(t)
+			testWorkerPoolStartStop()
 			ch <- struct{}{}
 		}()
 	}
@@ -35,7 +35,7 @@ func TestWorkerPoolStartStopConcurrent(t *testing.T) {
 	}
 }
 
-func testWorkerPoolStartStop(t *testing.T) {
+func testWorkerPoolStartStop() {
 	wp := &workerPool{
 		WorkerFunc:      func(conn net.Conn) error { return nil },
 		MaxWorkersCount: 10,
@@ -118,7 +118,7 @@ func testWorkerPoolMaxWorkersCount(t *testing.T) {
 			if _, err = conn.Write([]byte("foobar")); err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
-			data, err := ioutil.ReadAll(conn)
+			data, err := io.ReadAll(conn)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}

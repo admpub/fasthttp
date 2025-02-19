@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"testing"
 	"time"
@@ -162,7 +161,7 @@ func testPipeConnsCloseWhileReadWrite(t *testing.T) {
 	readCh := make(chan error)
 	go func() {
 		var err error
-		if _, err = io.Copy(ioutil.Discard, c1); err != nil {
+		if _, err = io.Copy(io.Discard, c1); err != nil {
 			if err != errConnectionClosed {
 				err = fmt.Errorf("unexpected error: %w", err)
 			} else {
@@ -356,5 +355,53 @@ func testConcurrency(t *testing.T, concurrency int, f func(*testing.T)) {
 		case <-time.After(time.Second):
 			t.Fatalf("timeout")
 		}
+	}
+}
+
+func TestPipeConnsAddrDefault(t *testing.T) {
+	t.Parallel()
+
+	pc := NewPipeConns()
+	c1 := pc.Conn1()
+
+	if c1.LocalAddr() != pipeAddr(0) {
+		t.Fatalf("unexpected local address: %v", c1.LocalAddr())
+	}
+
+	if c1.RemoteAddr() != pipeAddr(0) {
+		t.Fatalf("unexpected remote address: %v", c1.RemoteAddr())
+	}
+}
+
+func TestPipeConnsAddrCustom(t *testing.T) {
+	t.Parallel()
+
+	pc := NewPipeConns()
+
+	addr1 := &net.TCPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 1234}
+	addr2 := &net.TCPAddr{IP: net.IPv4(5, 6, 7, 8), Port: 5678}
+	addr3 := &net.TCPAddr{IP: net.IPv4(9, 10, 11, 12), Port: 9012}
+	addr4 := &net.TCPAddr{IP: net.IPv4(13, 14, 15, 16), Port: 3456}
+
+	pc.SetAddresses(addr1, addr2, addr3, addr4)
+
+	c1 := pc.Conn1()
+
+	if c1.LocalAddr() != addr1 {
+		t.Fatalf("unexpected local address: %v", c1.LocalAddr())
+	}
+
+	if c1.RemoteAddr() != addr2 {
+		t.Fatalf("unexpected remote address: %v", c1.RemoteAddr())
+	}
+
+	c2 := pc.Conn1()
+
+	if c2.LocalAddr() != addr1 {
+		t.Fatalf("unexpected local address: %v", c2.LocalAddr())
+	}
+
+	if c2.RemoteAddr() != addr2 {
+		t.Fatalf("unexpected remote address: %v", c2.RemoteAddr())
 	}
 }

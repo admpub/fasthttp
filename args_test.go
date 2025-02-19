@@ -182,7 +182,7 @@ func TestArgsEscape(t *testing.T) {
 
 	// Test all characters
 	k := "f.o,1:2/4"
-	var v = make([]byte, 256)
+	v := make([]byte, 256)
 	for i := 0; i < 256; i++ {
 		v[i] = byte(i)
 	}
@@ -210,7 +210,7 @@ func TestPathEscape(t *testing.T) {
 	testPathEscape(t, "*") // See https://github.com/golang/go/issues/11202
 
 	// Test all characters
-	var pathSegment = make([]byte, 256)
+	pathSegment := make([]byte, 256)
 	for i := 0; i < 256; i++ {
 		pathSegment[i] = byte(i)
 	}
@@ -336,8 +336,8 @@ func testCopyTo(t *testing.T, a *Args) {
 	var b Args
 	a.CopyTo(&b)
 
-	if !reflect.DeepEqual(*a, b) { //nolint
-		t.Fatalf("ArgsCopyTo fail, a: \n%+v\nb: \n%+v\n", *a, b) //nolint
+	if !reflect.DeepEqual(a, &b) {
+		t.Fatalf("ArgsCopyTo fail, a: \n%+v\nb: \n%+v\n", a, &b)
 	}
 
 	b.VisitAll(func(k, _ []byte) {
@@ -387,7 +387,7 @@ func TestArgsStringCompose(t *testing.T) {
 	expectedS := "foo=bar&aa=bbb&%D0%BF%D1%80%D0%B8%D0%B2%D0%B5%D1%82=%D0%BC%D0%B8%D1%80&bb&=xxxx&cvx=&novalue"
 	s := a.String()
 	if s != expectedS {
-		t.Fatalf("Unexpected string %q. Exected %q", s, expectedS)
+		t.Fatalf("Unexpected string %q. Expected %q", s, expectedS)
 	}
 }
 
@@ -443,13 +443,13 @@ func TestArgsSetGetDel(t *testing.T) {
 			t.Fatalf("Unexpected value: %q. Expected %q", a.Peek(k), v)
 		}
 		a.Del(k)
-		if string(a.Peek(k)) != "" {
+		if len(a.Peek(k)) != 0 {
 			t.Fatalf("Unexpected value: %q. Expected %q", a.Peek(k), "")
 		}
 	}
 
 	a.Parse("aaa=xxx&bb=aa")
-	if string(a.Peek("foo0")) != "" {
+	if len(a.Peek("foo0")) != 0 {
 		t.Fatalf("Unexpected value %q", a.Peek("foo0"))
 	}
 	if string(a.Peek("aaa")) != "xxx" {
@@ -474,7 +474,7 @@ func TestArgsSetGetDel(t *testing.T) {
 			t.Fatalf("Unexpected value: %q. Expected %q", a.Peek(k), v)
 		}
 		a.Del(k)
-		if string(a.Peek(k)) != "" {
+		if len(a.Peek(k)) != 0 {
 			t.Fatalf("Unexpected value: %q. Expected %q", a.Peek(k), "")
 		}
 	}

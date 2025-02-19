@@ -2,8 +2,9 @@ package fasthttp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"testing"
 	"time"
 )
@@ -173,7 +174,7 @@ func testGzipCompressSingleCase(s string) error {
 	if err != nil {
 		return fmt.Errorf("unexpected error: %w. s=%q", err, s)
 	}
-	body, err := ioutil.ReadAll(zr)
+	body, err := io.ReadAll(zr)
 	if err != nil {
 		return fmt.Errorf("unexpected error: %w. s=%q", err, s)
 	}
@@ -196,7 +197,7 @@ func testFlateCompressSingleCase(s string) error {
 	if err != nil {
 		return fmt.Errorf("unexpected error: %w. s=%q", err, s)
 	}
-	body, err := ioutil.ReadAll(zr)
+	body, err := io.ReadAll(zr)
 	if err != nil {
 		return fmt.Errorf("unexpected error: %w. s=%q", err, s)
 	}
@@ -225,7 +226,7 @@ func testConcurrent(concurrency int, f func() error) error {
 				return err
 			}
 		case <-time.After(time.Second):
-			return fmt.Errorf("timeout")
+			return errors.New("timeout")
 		}
 	}
 	return nil

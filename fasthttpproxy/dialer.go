@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/valyala/fasthttp"
+	"github.com/admpub/fasthttp"
 	"golang.org/x/net/http/httpproxy"
 	"golang.org/x/net/proxy"
 )
